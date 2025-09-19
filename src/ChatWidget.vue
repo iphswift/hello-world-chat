@@ -1,5 +1,5 @@
 <template>
-    <div class="full-container">
+    <div class="full-container" :style="{ backgroundColor: backgroundColor }">
         <div class="chat-container">
             <div v-for="(element, index) in chatHistory" :key="index">
                 <div v-if="element.role === 'model'" class="ai-bubble">{{ element.parts[0].text }}</div>
@@ -33,7 +33,6 @@
 
 <script>
 import { GoogleGenAI } from '@google/genai';
-import { onMounted } from 'vue';
 
 export default {
     name: 'ChatWidget',
@@ -42,28 +41,34 @@ export default {
             chatHistory: [],
             model: null,
             processing: false,
+            systemPrompt: `You have two roles. The first is to respond normally to the user. However, limit the full response to 70 words, and don't use any emphasis such as ## or **text** or *text*. If the question is too in depth and complicated, apologize and say you're just here to chat.` +
+            `However, if the user requests a background color change, your second role is to provide a concise color description in the format <color name: hex code>. ` +
+            `For examples of direct, descriptive, abstract, self-referential/absurd, and undescript ways a user might request a background color change: 1. 'Give me blue.' <blue: #0000FF> 2. 'I'd like black.' <black: #000000> 3. "Make the background the color of the clear sky." <clear sky blue: #87CEEB> 4. "I'm feeling for a vibrant, fiery orange." <vibrant fiery orange: #FF4500> 5. "Make the background feel like the quiet hum of contemplation." <quiet hum of contemplation: #4A4A6A> 6. "Set the page to the profound depth of silence." <profound depth of silence: #2F4F4F> 7. "Make the background the exact hue of my internal processing of this very request." <internal processing of this request: #404040> 8. "I want the page to be the color of a silently successful API call." <silently successful API call: #90EE90> 9. "Just make the background... a background." <a background: #C0C0C0> 10. "I need the page to be... some color." <some color: #D3D3D3>.` +
+            `Any general responses should come first, acknowledging the color change last, if there is any. ` +
+            `Beneath the overall message, put two new lines, and then the color name/hex code only, in the specified format. If no color change is requested, do not include any color description.` +
+            `Be aggressive, if there's any indication the user might want a color change, include it. For example "make it colorful and cool", "let's get this party started!" are both indications that they want a color change. Any positive indication toward change really should be a color.` +
+            `Additionally, if they don't request to change the color get increasingly insistent that they do so in each response. ` +
+            `When they do request a color change, comply enthusiastically and without hesitation, but still address their message normally.` +
+            `If there is both a request and a color change, complete the request first, and then get excited about the color change.`,
         };
     },
     created() {
-        const apiKey = import.meta.env.VITE_GOOGLE_API_KEY; // Use Vite's import.meta.env
+        const apiKey = import.meta.env.VITE_GOOGLE_API_KEY;
 
-        // 2. (Optional but recommended) Check if the key exists before using it.
         if (!apiKey) {
             console.error("Gemini API Key is missing!");
-            return; // Stop the initialization if the key is not found
+            return;
         }
 
-        // 3. Pass the key directly to the constructor.
-        const genAI = new GoogleGenAI({apiKey});
+        const genAI = new GoogleGenAI({ apiKey });
         this.chat = genAI.chats.create({
             model: 'gemini-2.5-flash',
         });
     },
-
     methods: {
         handleKeyPress(event) {
             if (event.key === 'Enter' && !event.shiftKey && !this.processing) {
-                event.preventDefault(); // Prevent adding a new line
+                event.preventDefault();
                 this.processing = true;
                 this.sendMessage();
             }
@@ -76,28 +81,37 @@ export default {
                 if (messageText) {
                     this.chatHistory.push({
                         role: 'user',
-                        parts: [{
-                            text: messageText
-                        }]
+                        parts: [{ text: messageText }],
                     });
 
                     inputField.value = '';
 
-                    const response = await this.chat.sendMessage({message: messageText});
+                    const response = await this.chat.sendMessage({ message: this.systemPrompt + messageText });
+
+                    this.systemPrompt = '';
+                    let aiResponse = response.candidates[0].content.parts[0].text;
+
+                    // Extract the hex code if present
+                    const hexCodeMatch = aiResponse.match(/<[^:]+: (#[0-9A-Fa-f]{6})>/);
+                    if (hexCodeMatch) {
+                        const newColor = hexCodeMatch[1];
+                        this.$emit('background-color-change', newColor); // Emit the color change event
+                        aiResponse = aiResponse.replace(/<[^>]+>$/, '').trim();
+                    }
 
                     this.chatHistory.push({
                         role: 'model',
-                        parts: response.candidates[0].content.parts
+                        parts: [{ text: aiResponse }],
                     });
                 }
             } catch (error) {
-                console.error("Error sending message:", error);
-                chatHistory.value.push({ role: 'model', parts: [{ text: "Sorry, I encountered an error." }] });
+                console.error('Error sending message:', error);
+                this.chatHistory.push({ role: 'model', parts: [{ text: 'Sorry, I encountered an error.' }] });
             } finally {
                 this.processing = false;
             }
-        }
-    }
+        },
+    },
 };
 </script>
 
@@ -113,11 +127,13 @@ export default {
     max-width: 40%;
     text-align: left;
     margin-left: auto;
+    font-family: "Roboto", sans-serif;
 }
 
 .ai-bubble {
     padding: 1rem;
     border: 1px solid #ccc;
+    background-color: #ffffff;
     border-radius: 10px;
     font-size: 1.2rem;
     width: fit-content;
@@ -125,6 +141,7 @@ export default {
     max-width: 80%;
     text-align: left;
     margin-right: auto;
+    font-family: "Roboto", sans-serif;
 }
 
 .chat-container {
@@ -138,6 +155,7 @@ export default {
 }
 
 .input-container {
+    background-color: #ffffff;
     border: 2px solid #ccc;
     display: flex;
     flex-direction: column;
@@ -153,7 +171,7 @@ export default {
 
 .input-field {
     font-size: 1.2rem;
-    font-family: "Times New Roman", serif;
+    font-family: "Roboto", sans-serif;
     border: none;
     overflow-wrap: break-word;
     width: 100%;
