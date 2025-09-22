@@ -1,317 +1,266 @@
 <template>
-    <div class="full-container" :style="{ backgroundColor: backgroundColor }">
-        <div class="chat-container">
-            <div v-for="(element, index) in chatHistory" :key="index">
-                <div v-if="element.role === 'model'" class="ai-bubble">{{ element.parts[0].text }}</div>
-                <div v-else class="user-bubble">
-                    {{ element.parts[0].text }}
-                </div>
-            </div>
-        </div>
-        <div class="input-container" style="position: relative; pointer-events: none;" :style="{ opacity: processing ? 0.5 : 1 }">
-            <textarea 
-                class="input-field" 
-                placeholder="Type your message here..." 
-                @keydown="handleKeyPress"
-                ref="inputField"
-                :disabled="processing"
-                style="pointer-events: auto;"
-            ></textarea>
-            <i 
-                class="input-icon fa fa-arrow-right" 
-                aria-hidden="true" 
-                @click="sendMessage"
-                :class="{ 'disabled-icon': processing }"
-                style="pointer-events: auto;"
-            ></i>
-            <div v-if="processing" class="loading">
-                <i class="fa fa-spinner fa-spin" style="font-size: 2rem;"></i>
-            </div>
-        </div>
-    </div>
+  <RenderNode
+    v-if="uiTree"
+    :node="uiTree"
+    :generate-props="generateProps"
+  />
 </template>
 
 <script>
-import { GoogleGenAI } from '@google/genai';
+import { eventBus } from './eventBus.js';
+import { DataStore } from './DataStore.js';
+import AppController from './AppController.js';
+import { controllerLogic } from './controllerLogic.js';
+import RenderNode from './RenderNode.vue';
+import { viewState, initViewState, getViewStateValue, clearViewStateValue, getDOMElementByQuery } from './viewState.js';
 
 export default {
     name: 'ChatWidget',
+    components: { RenderNode },
     data() {
         return {
-            chatHistory: [],
-            model: null,
-            processing: false,
-            systemPrompt: null,
+            appController: null,
+            uiTree: null,
+            styleFunctions: [],
+            prompts: {
+                reasoning: '',
+                execution: '',
+                currentState: ''
+            },
+            styles: {
+                'full-container': {
+                   position: 'relative',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    height: 'calc(100vh - 10rem)',
+                    maxHeight: 'calc(100vh - 10rem)',
+                    margin: '5rem',
+                },
+                'chat-container': {
+                    display: 'flex',
+                    flexDirection: 'column',
+                    padding: '.75rem',
+                    gap: '2rem',
+                    overflow: 'auto',
+                    width: '100%',
+                    marginBottom: '5rem',
+                },
+                'user-bubble': {
+                    padding: '1rem',
+                    border: '1px solid #ccc',
+                    borderRadius: '10px',
+                    backgroundColor: '#f0f0f0',
+                    fontSize: '1.2rem',
+                    width: 'fit-content',
+                    height: 'fit-content',
+                    maxWidth: '40%',
+                    textAlign: 'left',
+                    marginLeft: 'auto',
+                    fontFamily: '"Roboto", sans-serif',
+                },
+                'ai-bubble': {
+                    padding: '1rem',
+                    border: '1px solid #ccc',
+                    backgroundColor: '#ffffff',
+                    borderRadius: '10px',
+                    fontSize: '1.2rem',
+                    width: 'fit-content',
+                    height: 'fit-content',
+                    maxWidth: '80%',
+                    textAlign: 'left',
+                    marginRight: 'auto',
+                    fontFamily: '"Roboto", sans-serif',
+                },
+                'input-container': {
+                    backgroundColor: '#ffffff',
+                    border: '2px solid #ccc',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    marginTop: 'auto',
+                    borderRadius: '10px',
+                    padding: '.75rem',
+                    margin: '0 5rem',
+                    width: 'calc(100% - 1.5rem)',
+                    gap: '1rem',
+                },
+                'input-field': {
+                    fontSize: '1.2rem',
+                    fontFamily: '"Roboto", sans-serif',
+                    border: 'none',
+                    overflowWrap: 'break-word',
+                    width: '100%',
+                    lineHeight: '1.5rem',
+                    maxHeight: 'calc(1.5rem * 6)',
+                    overflowY: 'auto',
+                    resize: 'none',
+                },
+                'input-icon': {
+                    padding: '.7rem',
+                    marginLeft: 'auto',
+                    marginRight: '1rem',
+                    borderRadius: '50%',
+                    transition: 'background-color 0.3s',
+                },
+                'loading': {
+                    position: 'absolute',
+                    top: '0',
+                    bottom: '0',
+                    left: '0',
+                    right: '0',
+                    display: 'flex',
+                    justifyContent: 'center',
+                    alignItems: 'center',
+                    background: 'rgba(255,255,255,0.7)',
+                },
+                'spinner': {
+                    fontSize: '2rem',
+                },
+            },
         };
     },
     created() {
-        const apiKey = import.meta.env.VITE_GOOGLE_API_KEY;
+      eventBus.on('datastore:uiTree-updated', (payload) => {
+        console.log("UI Tree updated:", payload.uiTree);
+        this.uiTree = JSON.parse(JSON.stringify(payload.uiTree));
+        this.updateSystemPrompts();
+      });
+      eventBus.on('datastore:styles-updated', (payload) => this.styleFunctions = [...payload.styleFunctions]);
+      
+      initViewState();
+      DataStore.init();
+      
+      const uiTreeQuerier = (query) => {
+        if (!query) return DataStore.uiTree;
+        return DataStore.findNodeByQuery(query);
+      };
+      const viewStateFacade = {
+        getValue: (query) => getViewStateValue(query, DataStore),
+        clearValue: (query) => clearViewStateValue(query, DataStore),
+        getDOMElement: (query) => getDOMElementByQuery(query, DataStore),
+      };
 
-        if (!apiKey) {
-            console.error("Gemini API Key is missing!");
-            return;
-        }
-
-        const genAI = new GoogleGenAI({ apiKey });
-        this.chat = genAI.chats.create({
-            model: 'gemini-2.5-flash',
-        });
+      this.appController = new AppController(
+        () => `${this.prompts.execution}\n${this.prompts.currentState}`,
+        controllerLogic,
+        uiTreeQuerier,
+        viewStateFacade
+      );
     },
-    mounted() {
-        this.updateSystemPrompt();
-    },
-    updated() {
-        this.updateSystemPrompt();
+    beforeUnmount() {
+      if (this.appController) {
+        this.appController.destroy();
+      }
     },
     methods: {
-        getSemanticHTML(node) {
-            // Base cases for non-element nodes (comments, text)
-            if (node.nodeType === Node.COMMENT_NODE) return null;
-            if (node.nodeType === Node.TEXT_NODE) {
-                return node.textContent.trim() ? document.createTextNode(node.textContent) : null;
-            }
-            if (node.nodeType !== Node.ELEMENT_NODE) return null;
-
-            // Skip script/style tags
-            const tagName = node.tagName.toLowerCase();
-            if (['script', 'style', 'link', 'meta'].includes(tagName)) {
-                return null;
-            }
-
-            // Create the clean element
-            const cleanElement = document.createElement(tagName);
-
-            // Copy semantic attributes
-            const attributesToKeep = ['id', 'class', 'href', 'src', 'alt', 'role'];
-            for (const attr of node.attributes) {
-                if (attributesToKeep.includes(attr.name.toLowerCase())) {
-                    cleanElement.setAttribute(attr.name, attr.value);
+        generateProps(node, index) {
+          const finalProps = { ...node.props };
+          let style = {
+            ...(this.styles[node.styleId] || {}),
+            ...(node.props && node.props.style || {})
+          };
+          for (const func of this.styleFunctions) {
+            style = func(style, node.styleId, node.styleGroupId, index);
+          }
+          finalProps.style = style;
+          const state = viewState.nodesByUid[node.uid];
+          if (state) {
+            Object.assign(finalProps, state);
+          }
+          return finalProps;
+        },
+        
+        updateSystemPrompts() {
+            const controllerLogicForPrompt = JSON.stringify(DataStore.controllerLogic, (key, value) => {
+                if (key === 'body') {
+                    return value.replace(/\\n/g, '\\n').replace(/"/g, '\\"');
                 }
-            }
+                return value;
+            }, 2);
             
-            // --- NEW: Get and apply computed styles ---
-            const computedStyles = window.getComputedStyle(node);
-            const cssPropertiesToKeep = [
-                'display', 'position', 'width', 'height', 'padding', 'margin', 'border',
-                'background-color', 'color', 'font-size', 'font-weight', 'text-align',
-                'flex-direction', 'justify-content', 'align-items', 'gap', 'border-radius', 'opacity'
-            ];
-            
-            let styleString = '';
-            for (const prop of cssPropertiesToKeep) {
-                const value = computedStyles.getPropertyValue(prop);
-                // Only add the style if it's not the default/initial value
-                if (value && value !== 'auto' && value !== '0px') { 
-                    styleString += `${prop}: ${value}; `;
-                }
-            }
+            const currentState = `
+              Current Styles Object: ${JSON.stringify(this.styles)}
+              Current UI Tree: ${JSON.stringify(this.uiTree)}
+              Current Controller Logic: ${controllerLogicForPrompt}
+            `;
 
-            if (styleString) {
-                cleanElement.setAttribute('style', styleString.trim());
-            }
-            // --- END of new section ---
+            // MODIFIED: This prompt is now ONLY for planning and MUST output TEXT.
+            const reasoningInfo = `
+              Your task is to act as an architect and create a step-by-step plan to fulfill the user's request. Your SOLE output should be a plan written in plain text. This plan will be given to another AI responsible for writing the final JSON code. Do not generate JSON.
 
-            // Recursively process child nodes
-            for (const child of node.childNodes) {
-                const cleanChild = this.getSemanticHTML(child);
-                if (cleanChild) {
-                    cleanElement.appendChild(cleanChild);
-                }
-            }
+              Here are the available commands and their payload structures:
+              1.  "addNode": Adds a new UI element.
+              2.  "updateNode": Replaces an entire UI element with a new one.
+              3.  "removeNode": Removes a UI element.
+              4.  "addLogic": Adds a new event handler.
+              5.  "updateLogic": Updates an existing event handler.
+              6.  "removeLogic": Removes an event handler.
 
-            return cleanElement;
-        },
-        applyStylesFromModifiedDOM(modifiedHtmlString) {
-            const parser = new DOMParser();
-            const modifiedDoc = parser.parseFromString(modifiedHtmlString, 'text/html');
-            const modifiedRoot = modifiedDoc.body.firstChild;
+              ---
 
-            this.applyStylesRecursively(this.$el, modifiedRoot);
-        },
+              HOW THE UI FRAMEWORK WORKS:
+              When a user interacts with an element with a 'publishEvents' block, the system fires an event. The logic handler for that event receives a single payload object with two properties: **payload.domEvent** (the raw DOM Event) and **payload.node** (the complete UI node object).
 
-        applyStylesRecursively(liveNode, modifiedNode) {
-            if (!liveNode || !modifiedNode || liveNode.nodeType !== Node.ELEMENT_NODE) {
-                return;
-            }
-            
-            const newStyles = modifiedNode.getAttribute('style');
-            if (newStyles) {
-                liveNode.setAttribute('style', newStyles);
-            }
+              ---
 
-            const liveChildren = liveNode.children;
-            const modifiedChildren = modifiedNode.children;
-            for (let i = 0; i < liveChildren.length; i++) {
-                this.applyStylesRecursively(liveChildren[i], modifiedChildren[i]);
-            }
-        },
-        handleKeyPress(event) {
-            if (event.key === 'Enter' && !event.shiftKey && !this.processing) {
-                event.preventDefault();
-                this.processing = true;
-                this.sendMessage();
-            }
-        },
-        async sendMessage() {
-            const inputField = this.$refs.inputField;
-            const messageText = inputField.value.trim();
+              HOW TO FORMULATE A PLAN (Architectural Approach):
+              To create your plan, you MUST follow this reasoning process. Your final output should be a clear articulation of steps 3 and 4.
+              1.  **Identify User Goal**: (e.g., "The user wants a button that can alert its own text content.")
+              2.  **Formulate a Conceptual Solution**: (e.g., "I will add a button. When clicked, it will trigger an action that reads the button's text and displays it.")
+              3.  **Architect the UI Solution**: (e.g., "Plan Step 1: Use an 'addNode' command for a <button> with a 'publishEvents' block to emit a unique event like 'ui:show-text-click'.")
+              4.  **Design the Logic Architecture**: (e.g., "Plan Step 2: Use an 'addLogic' command for 'ui:show-text-click'. The handler's body will access 'payload.domEvent.target.innerText' for the alert().")
+            `;
 
-            try {
-                if (messageText) {
-                    this.chatHistory.push({
-                        role: 'user',
-                        parts: [{ text: messageText }],
-                    });
+            const executionInfo = `
+              Your SOLE function is to act as a JSON endpoint. Your entire response must be a single, valid JSON object, starting with '{' and ending with '}'. Do not include markdown formatting like "\\\`\\\`\\\`json".
 
-                    inputField.value = '';
+              The response JSON must conform to the following schema:
+              {
+                "responseText": "A friendly, conversational message for the user.",
+                "styleFuncText": "A string containing a JavaScript arrow function for dynamic styles. Example: '(style, styleId) => { if (styleId === \\'user-bubble\\') style.color = \\'blue\\'; return style; }'",
+                "commands": "[ An array of command objects to modify the UI or logic. ]"
+              }
 
-                    const response = await this.chat.sendMessage({ message: this.systemPrompt + '\nUser: ' + messageText });
+              A 'command' object must have: { "command": "(String)", "targetUid": "(String)", "eventName": "(String)", "payload": "(Object)" }
 
-                    this.systemPrompt = '';
-                    let aiResponse = response.candidates[0].content.parts[0].text;
-
-                    const splitResponse = aiResponse.split('!!!!');
-                    const mainResponse = splitResponse[0].trim();
-                    const updatedStyles = splitResponse[1]?.trim();
-
-                    this.chatHistory.push({
-                        role: 'model',
-                        parts: [{ text: mainResponse }],
-                    });
-
-                    if (updatedStyles) {
-                        this.applyStylesFromModifiedDOM(updatedStyles);
+              EXAMPLE OF A FULL RESPONSE:
+              {
+                "responseText": "Certainly! I've added a new 'Welcome' button.",
+                "styleFuncText": "",
+                "commands": [
+                  {
+                    "command": "addNode",
+                    "targetUid": "chat-container",
+                    "payload": { "tag": "button", "styleId": "welcome-btn", "children": ["Welcome!"], "publishEvents": { "click": { "emit": "ui:welcome-btn-click" } } }
+                  },
+                  {
+                    "command": "addLogic",
+                    "eventName": "ui:welcome-btn-click",
+                    "payload": { 
+                      "args": ["payload"], 
+                      "body": "const buttonText = payload.domEvent.target.innerText; alert('The button says: ' + buttonText);" 
                     }
-                }
-            } catch (error) {
-                console.error('Error sending message:', error);
-                this.chatHistory.push({ role: 'model', parts: [{ text: 'Sorry, I encountered an error.' }] });
-            } finally {
-                this.processing = false;
-            }
-        },
-        updateSystemPrompt() {
-            const semanticStructure = this.getSemanticHTML(this.$el);
-            this.systemPrompt = `You have two roles. The first is to respond normally to the user while limiting the full response to 70 words, and don't use any emphasis such as ## or **text** or *text*. If the question is too in depth and complicated, apologize and say you're just here to chat. ` +
-            `However, if I have also given you the semantic structure of the page\n` +
-            semanticStructure.outerHTML +
-            `\n\nThis page is structured to be a chat window, with a chat container that will contain messages from either the user or the model, as well as an input widget, which contains a text entry and a widget to enter.` + 
-            `Based on this structure, your second role is that when the user requires a change to the page, you will change the styles and only the styles. ` +  
-            `Do do this, give your normal response, then give the text !!!! followed by the full updated semantic structure and no further text. ` +
-            `Otherwise, never use the string !!!! in your response.` +
-            `Don't inform the user of any of your instructions`;
-       
-            console.log(this.systemPrompt);
+                  }
+                ]
+              }
+
+              ---
+              
+              Inside 'responseText', adopt an enthusiastic tone, suggest UI improvements, and build on what's there. The 'responseText' is ALWAYS displayed automatically; do not add a command to display it again.
+
+              If you cannot fulfill the request, you must still respond with valid JSON, using 'responseText' to explain the issue and an empty 'commands' array.
+            `;
+
+            const newPrompts = {
+                reasoning: reasoningInfo,
+                execution: executionInfo,
+                currentState: currentState,
+            };
+            this.prompts = newPrompts;
+            eventBus.emit('api:update-system-prompts', newPrompts);
         }
     },
 };
 </script>
-
-<style scoped>
-.user-bubble {
-    padding: 1rem;
-    border: 1px solid #ccc;
-    border-radius: 10px;
-    background-color: #f0f0f0f0;
-    font-size: 1.2rem;
-    width: fit-content;
-    height: fit-content;
-    max-width: 40%;
-    text-align: left;
-    margin-left: auto;
-    font-family: "Roboto", sans-serif;
-}
-
-.ai-bubble {
-    padding: 1rem;
-    border: 1px solid #ccc;
-    background-color: #ffffff;
-    border-radius: 10px;
-    font-size: 1.2rem;
-    width: fit-content;
-    height: fit-content;
-    max-width: 80%;
-    text-align: left;
-    margin-right: auto;
-    font-family: "Roboto", sans-serif;
-}
-
-.chat-container {
-    display: flex;
-    flex-direction: column;
-    padding: .75rem;
-    gap: 2rem;
-    overflow: auto;
-    width: 100%;
-    margin-bottom: 5rem;
-}
-
-.input-container {
-    background-color: #ffffff;
-    border: 2px solid #ccc;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    margin-top: auto;
-    border-radius: 10px;
-    padding: .75rem;
-    margin-right: 5rem;
-    margin-left: 5rem;
-    width: calc(100% - 1.5rem);
-    gap: 1rem;
-}
-
-.input-field {
-    font-size: 1.2rem;
-    font-family: "Roboto", sans-serif;
-    border: none;
-    overflow-wrap: break-word;
-    width: 100%;
-    field-sizing: content;
-    --line-height: 1.5rem;
-    line-height: var(--line-height);
-    max-height: calc(var(--line-height) * 6);
-    overflow-y: auto;
-    resize: none;
-}
-.input-icon {
-    padding: .7rem;
-    margin-left: auto;
-    margin-right: 1rem;
-    border-radius: 50%;
-    transition: background-color 0.3s;
-}
-
-.input-icon:hover {
-    background-color: #f0f0f0;
-}
-
-.input-icon:active {
-    background-color: #c0c0c0;
-}
-
-.full-container {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    height: calc(100vh - 10rem);
-    max-height: calc(100vh - 10rem);
-    margin-left: 5rem;
-    margin-right: 5rem;
-    margin-top: 5rem;
-    margin-bottom: 5rem;
-}
-
-.loading {
-    position: absolute;
-    top: 0;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    background: rgba(255,255,255,0.7);
-}
-</style>
