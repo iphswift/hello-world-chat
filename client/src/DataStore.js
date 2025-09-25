@@ -2,9 +2,10 @@ import { eventBus } from './eventBus.js';
 import { controllerLogic as defaultControllerLogic } from './controllerLogic.js';
 import { buildInitialUiTree } from './uiTree.js'; 
 import { syncIdCounterFromTree, addUidsToTree } from './uid.js';
+import { initialStyles } from './initialStyles.js'; // Import the new styles
 
 const LOGIC_KEY = 'app_controller_logic';
-const STYLES_KEY = 'app_style_functions';
+const STYLES_KEY = 'app_styles';
 const UI_TREE_KEY = 'app_ui_tree';
 
 function isObject(item) {
@@ -32,19 +33,18 @@ function deepMerge(target, source) {
   return output;
 }
 
-
 class Store {
     constructor() {
       this._isInitialized = false; // Add this flag
       this.controllerLogic = this._load(LOGIC_KEY, defaultControllerLogic);
-      this.styleFunctions = this._loadStyleFunctions();
+      this.styles = this._load(STYLES_KEY, initialStyles); // Use the imported styles
       let tree = this._load(UI_TREE_KEY, buildInitialUiTree());
       syncIdCounterFromTree(tree); // Sync counter from loaded state
       this.uiTree = addUidsToTree(tree); // Add UIDs to any new nodes
     }
     /**
    * Public method to get a property from a specific node.
-   * @param {string} targetId - The styleId of the node to find.
+   * @param {string} targetId - The className of the node to find.
    * @param {string} propName - The name of the property to retrieve.
    * @returns {*} The value of the property, or undefined if not found.
    */
@@ -60,13 +60,15 @@ class Store {
   init() {
     if (this._isInitialized) return; // Add this guard
     this._isInitialized = true; // Set the flag
-    eventBus.on('datastore:addStyleFunc', this._addStyleFunc.bind(this));
     eventBus.on('datastore:addNode', this._addNode.bind(this));
     eventBus.on('datastore:removeNode', this._removeNode.bind(this));
     eventBus.on('datastore:updateNode', this._updateNode.bind(this));
     eventBus.on('datastore:addControllerEvent', this._addControllerEvent.bind(this));
     eventBus.on('datastore:removeControllerEvent', this._removeControllerEvent.bind(this));
     eventBus.on('datastore:updateControllerEvent', this._updateControllerEvent.bind(this));
+    eventBus.on('datastore:addStyle', this._addStyle.bind(this));
+    eventBus.on('datastore:updateStyle', this._updateStyle.bind(this));
+    eventBus.on('datastore:removeStyle', this._removeStyle.bind(this));
     
     // Initial broadcast to sync the app on startup
     this.broadcastState();
@@ -75,38 +77,45 @@ class Store {
 
     /**
    * Finds the first node in the tree that matches all properties of a query object.
-   * @param {object} query - An object with properties to match (e.g., { styleId: 'input-field' }).
+   * @param {object} query - An object with properties to match (e.g., { className: 'input-field' }).
    * @returns {object|null} The found node object, or null.
    */
     findNodeByQuery(query) {
-        // A recursive helper function to do the actual search
-        const find = (node) => {
-            if (!node || typeof node !== 'object') {
-            return null;
-            }
+        // ✅ REVISED: This function now handles nested queries.
+        const isMatch = (node, q) => {
+            for (const key in q) {
+                if (!node.hasOwnProperty(key)) {
+                    return false;
+                }
+                const nodeValue = node[key];
+                const queryValue = q[key];
 
-            // Check if the current node is a match
-            let isMatch = true;
-            for (const key in query) {
-            if (node[key] !== query[key]) {
-                isMatch = false;
-                break;
-            }
-            }
-            if (isMatch) {
-            return node;
-            }
-
-            // If not a match, search in the children
-            if (node.children) {
-            for (const child of node.children) {
-                const foundInChildren = find(child);
-                if (foundInChildren) {
-                return foundInChildren;
+                if (typeof queryValue === 'object' && queryValue !== null && typeof nodeValue === 'object' && nodeValue !== null) {
+                    if (!isMatch(nodeValue, queryValue)) {
+                        return false;
+                    }
+                } else if (nodeValue !== queryValue) {
+                    return false;
                 }
             }
-            }
+            return true;
+        };
 
+        const find = (node) => {
+            if (!node || typeof node !== 'object') {
+                return null;
+            }
+            if (isMatch(node, query)) {
+                return node;
+            }
+            if (node.children) {
+                for (const child of node.children) {
+                    const foundInChildren = find(child);
+                    if (foundInChildren) {
+                        return foundInChildren;
+                    }
+                }
+            }
             return null;
         };
 
@@ -131,7 +140,7 @@ class Store {
   /**
    * Adds a new node to the children of a parent node identified by a query.
    * @param {object} nodeToAdd - The new node to add.
-   * @param {object} parentQuery - The query to find the parent node (e.g., { styleId: 'chat-container' }).
+   * @param {object} parentQuery - The query to find the parent node (e.g., { className: 'chat-container' }).
    */
   addNodeToParentByQuery(nodeToAdd, parentQuery) {
     const parentNode = this.findNodeByQuery(parentQuery);
@@ -149,21 +158,12 @@ class Store {
    * Broadcasts the current state to the rest of the application.
    */
   broadcastState() {
-    eventBus.emit('datastore:styles-updated', { styleFunctions: this.styleFunctions });
+    eventBus.emit('datastore:styles-updated', { styles: this.styles });
     eventBus.emit('datastore:uiTree-updated', { uiTree: this.uiTree });
     eventBus.emit('datastore:logic-updated', { logic: this.controllerLogic });
   }
 
   // --- Event Handlers ---
-
-  _addStyleFunc(payload) {
-    const newFunc = this._rehydrateFunction(payload.funcString);
-    if (newFunc) {
-      this.styleFunctions.push(newFunc);
-      this._saveStyleFunctions();
-      eventBus.emit('datastore:styles-updated', { styleFunctions: this.styleFunctions });
-    }
-  }
 
   _addNode(payload) {
     const parent = this._findNodeByUid(this.uiTree, payload.parentUid);
@@ -176,7 +176,25 @@ class Store {
   }
 
 _removeNode(payload) {
-    // 1. Handle the case where the root node is the target
+    let { targetUid, targetQuery } = payload;
+
+    if (!targetUid && targetQuery) {
+        const foundNode = this.findNodeByQuery(targetQuery);
+        if (foundNode) {
+            targetUid = foundNode.uid;
+        } else {
+            console.error(`_removeNode Error: No node found for query`, targetQuery);
+            return;
+        }
+    }
+
+    if (!targetUid) {
+        console.error(`_removeNode Error: No targetUid or valid targetQuery was provided.`);
+        return;
+    }
+    
+    // 1. Handle the case
+    //  where the root node is the target
     if (this.uiTree && this.uiTree.uid === payload.targetUid) {
       this.uiTree = null;
       this._save(UI_TREE_KEY, this.uiTree);
@@ -194,13 +212,30 @@ _removeNode(payload) {
   }
 
   _updateNode(payload) {
-    const { targetUid, newNodeData } = payload;
+    let { targetUid, targetQuery, newNodeData } = payload;
+
+    // If a query is provided and we don't have a UID, resolve the query.
+    if (!targetUid && targetQuery) {
+        const foundNode = this.findNodeByQuery(targetQuery);
+        if (foundNode) {
+            targetUid = foundNode.uid; // Resolve the query to a UID.
+        } else {
+            console.error(`_updateNode Error: No node found for query`, targetQuery);
+            return;
+        }
+    }
+
+    if (!targetUid) {
+        console.error(`_updateNode Error: No targetUid or valid targetQuery was provided.`);
+        return;
+    }
 
     // 1. Handle the case where the root node is the target
     if (this.uiTree && this.uiTree.uid === targetUid) {
-      const originalUid = this.uiTree.uid;
-      // Replace the whole tree, preserving the original UID and adding UIDs to any new children
-      this.uiTree = addUidsToTree({ ...newNodeData, uid: originalUid });
+      // Deep merge the new data into the existing tree
+      this.uiTree = deepMerge(this.uiTree, newNodeData);
+      // Ensure UIDs are still correct after merge (deepMerge doesn't handle this)
+      this.uiTree = addUidsToTree(this.uiTree);
       this._save(UI_TREE_KEY, this.uiTree);
       eventBus.emit('datastore:uiTree-updated', { uiTree: this.uiTree });
       return; // Exit early
@@ -211,8 +246,9 @@ _removeNode(payload) {
     if (location && location.parent) {
       const { parent, index } = location;
       const originalNode = parent.children[index];
-      const finalNode = addUidsToTree({ ...newNodeData, uid: originalNode.uid });
-      parent.children[index] = finalNode;
+      // Deep merge the new data into the original node
+      const finalNode = deepMerge(originalNode, newNodeData);
+      parent.children[index] = addUidsToTree(finalNode); // Re-run addUidsToTree in case children were added
       this._save(UI_TREE_KEY, this.uiTree);
       eventBus.emit('datastore:uiTree-updated', { uiTree: this.uiTree });
     } else {
@@ -248,6 +284,33 @@ _removeNode(payload) {
     }
   }
 
+  _addStyle(payload) {
+    const { className, styleObject } = payload;
+    if (className && styleObject) {
+        this.styles[className] = styleObject;
+        this._save(STYLES_KEY, this.styles);
+        eventBus.emit('datastore:styles-updated', { styles: this.styles });
+    }
+  }
+
+  _updateStyle(payload) {
+      const { className, styleObject } = payload;
+      if (className && this.styles[className] && styleObject) {
+          this.styles[className] = deepMerge(this.styles[className], styleObject);
+          this._save(STYLES_KEY, this.styles);
+          eventBus.emit('datastore:styles-updated', { styles: this.styles });
+      }
+  }
+
+  _removeStyle(payload) {
+      const { className } = payload;
+      if (className && this.styles[className]) {
+          delete this.styles[className];
+          this._save(STYLES_KEY, this.styles);
+          eventBus.emit('datastore:styles-updated', { styles: this.styles });
+      }
+  }
+
   // --- Persistence & Utility ---
 
   _save(key, data) { localStorage.setItem(key, JSON.stringify(data)); }
@@ -255,47 +318,6 @@ _removeNode(payload) {
     const data = localStorage.getItem(key);
     return data ? JSON.parse(data) : defaultValue;
   }
-  _saveStyleFunctions() {
-      const stringArray = this.styleFunctions.map(func => func.toString());
-      this._save(STYLES_KEY, stringArray);
-  }
-  _loadStyleFunctions() {
-      const stringArray = this._load(STYLES_KEY, []);
-      return stringArray.map(s => this._rehydrateFunction(s)).filter(Boolean);
-  }
-    /**
-     * Converts a string representation of a function back into an executable function.
-     * @param {string} funcString - The string to convert (e.g., "function(a, b) { return a + b; }").
-     * @returns {Function|null} The executable function, or null if parsing fails.
-     */
-    _rehydrateFunction(funcString) {
-        if (!funcString || typeof funcString !== 'string') {
-            return null;
-        }
-        
-        try {
-            // This regex is designed to capture the arguments and body from both
-            // standard 'function()' and arrow '() => {}' function strings.
-            const match = funcString.match(/function\s*(?:[\w$]*)?\s*\(([^)]*)\)\s*\{([\s\S]*)\}/) || funcString.match(/\(([^)]*)\)\s*=>\s*\{([\s\S]*)\}/);
-
-            if (!match) {
-            console.error("Could not parse function string:", funcString);
-            return null;
-            }
-
-            // The first captured group is the arguments string (e.g., "style, uniqueId").
-            const args = match[1].split(',').map(arg => arg.trim()).filter(Boolean);
-            
-            // The second captured group is the function's body.
-            const body = match[2];
-
-            // The Function constructor creates a new function from these parts.
-            return new Function(...args, body);
-        } catch (error) {
-            console.error("Error rehydrating function:", error);
-            return null;
-        }
-    }
     _findNodeByUid(node, uid) {
         if (!node) return null;
         if (node.uid === uid) {

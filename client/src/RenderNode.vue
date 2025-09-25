@@ -1,10 +1,9 @@
 <template>
-  <component :is="node.tag" v-bind="finalProps" :uid="node.uid">
+  <component :is="node.tag" v-bind="finalProps">
     <template v-for="(child, index) in node.children || []" :key="index">
       <RenderNode 
         v-if="isObject(child)" 
-        :node="child" 
-        :generate-props="generateProps" 
+        :node="child"
         :index="index"
       />
       <template v-else>
@@ -25,29 +24,36 @@ export default {
   name: 'RenderNode',
   props: {
     node: { type: Object, required: true },
-    generateProps: { type: Function, required: true },
     index: { type: Number, default: 0 },
   },
   computed: {
     finalProps() {
-      const props = this.generateProps(this.node, this.index);
-      if (this.node.publishEvents) {
-        for (const domEventName in this.node.publishEvents) {
-          const handlerName = `on${domEventName.charAt(0).toUpperCase() + domEventName.slice(1)}`;
-          const eventConfig = this.node.publishEvents[domEventName];
+      const finalProps = { ...(this.node.attributes || {}) };
+      
+      finalProps['data-uid'] = this.node.uid;
+      
+      if (this.node.presentation?.className) {
+        finalProps.class = [finalProps.class, this.node.presentation.className].filter(Boolean).join(' ');
+      }
 
-          props[handlerName] = (domEvent) => {
+      const eventHandlers = this.node.behavior?.eventHandlers;
+      if (eventHandlers) {
+        for (const domEventName in eventHandlers) {
+          const handlerName = `on${domEventName.charAt(0).toUpperCase() + domEventName.slice(1)}`;
+          const eventConfig = eventHandlers[domEventName];
+
+          finalProps[handlerName] = (domEvent) => {
             if (eventConfig.payload) {
                 const stateUpdatePayload = { 
                     uid: this.node.uid, 
                     propToUpdate: eventConfig.payload.propToUpdate,
                     newValue: eventConfig.payload.valueFrom
                         ? getValueFromPath(domEvent, eventConfig.payload.valueFrom)
-                        : undefined                };            
+                        : undefined                
+                };            
                 eventBus.emit('viewState:update', stateUpdatePayload);
             }
             if (eventConfig.emit) {
-                // MODIFIED: Emit a structured payload with both domEvent and the node
                 const eventPayload = {
                   domEvent: domEvent,
                   node: this.node
@@ -57,7 +63,7 @@ export default {
           };
         }
       }
-      return props;
+      return finalProps;
     },
   },
   methods: {

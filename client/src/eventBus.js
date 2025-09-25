@@ -39,7 +39,13 @@ class EventBus {
     emit(event, data) {
       if (!this.listeners[event]) return;
   
-      this.listeners[event].forEach(listener => listener(data));
+      this.listeners[event].forEach(listener => {
+        try{
+          listener(data)
+        } catch (ex) { 
+          console.error("Unhandled error in listener!", ex)
+        }
+      });
     }
   }
   
