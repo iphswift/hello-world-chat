@@ -143,11 +143,25 @@ export const controllerLogic = {
                             if (!cmd.command) continue;
                             switch (cmd.command) {
                                 case 'addNode':
-                                    this.emit('datastore:addNode', { parentUid: cmd.targetUid, nodeToAdd: cmd.payload });
+                                    this.emit('datastore:addNode', { 
+                                        targetUid: cmd.targetUid, 
+                                        targetQuery: cmd.targetQuery, 
+                                        siblingUid: cmd.siblingUid, 
+                                        siblingQuery: cmd.siblingQuery, 
+                                        position: cmd.position, 
+                                        nodeToAdd: cmd.payload 
+                                    });
                                     break;
                                 case 'updateNode':
-                                    this.emit('datastore:updateNode', { targetUid: cmd.targetUid, targetQuery: cmd.targetQuery, newNodeData: cmd.payload });
-                                    break;
+                                    this.emit('datastore:updateNode', { 
+                                        targetUid: cmd.targetUid, 
+                                        targetQuery: cmd.targetQuery, 
+                                        siblingUid: cmd.siblingUid, 
+                                        siblingQuery: cmd.siblingQuery, 
+                                        position: cmd.position, 
+                                        newNodeData: cmd.newNodeData 
+                                    });
+                                    break;                                
                                 case 'removeNode':
                                     this.emit('datastore:removeNode', { targetUid: cmd.targetUid, targetQuery: cmd.targetQuery});
                                     break;

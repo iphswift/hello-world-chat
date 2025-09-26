@@ -168,53 +168,60 @@ class Store {
 
 
   _addNode(payload) {
-    const { parentUid, targetUid, siblingUid, siblingQuery, position, nodeToAdd } = payload;
-    const effectiveParentUid = parentUid || targetUid; 
+    let { parentUid, targetUid, targetQuery, siblingUid, siblingQuery, position, nodeToAdd } = payload;
+    let effectiveParentUid = parentUid || targetUid; 
     const nodeWithUids = addUidsToTree(nodeToAdd);
   
-    // Case 1: Insert as a sibling using either UID or a query
+    // Case 1: Insert as a sibling
     if ((siblingUid || siblingQuery) && (position === 'before' || position === 'after')) {
       let siblingNode = null;
       if (siblingUid) {
         siblingNode = this._findNodeByUid(this.uiTree, siblingUid);
-      } else { // siblingQuery must exist
+      } else {
         siblingNode = this.findNodeByQuery(siblingQuery);
       }
   
       if (!siblingNode) {
-        console.error(`_addNode Error: Could not find sibling node with identifier:`, {siblingUid, siblingQuery});
+        console.error('_addNode Error: Could not find sibling node', {siblingUid, siblingQuery});
         return;
       }
-  
+      // ... rest of sibling logic is correct
       const location = this._findParentAndIndexByUid(this.uiTree, siblingNode.uid);
       if (location && location.parent && location.parent.children) {
         const { parent, index } = location;
         const insertionIndex = position === 'before' ? index : index + 1;
         parent.children.splice(insertionIndex, 0, nodeWithUids);
-        this._save('app_ui_tree', this.uiTree);
+        this._save(UI_TREE_KEY, this.uiTree);
         eventBus.emit('datastore:uiTree-updated', { uiTree: this.uiTree });
-      } else {
-        console.error(`_addNode Error: Could not find parent for resolved sibling with UID ${siblingNode.uid}.`);
       }
       return;
     }
   
-    // Case 2: Add as a child (the default behavior)
+    // --- FIX: Resolve targetQuery to a UID before proceeding ---
+    if (!effectiveParentUid && targetQuery) {
+      const parentNode = this.findNodeByQuery(targetQuery);
+      if (parentNode) {
+        effectiveParentUid = parentNode.uid;
+      }
+    }
+    // --- END FIX ---
+  
+    // Case 2: Add as a child
     if (effectiveParentUid) {
       const parent = this._findNodeByUid(this.uiTree, effectiveParentUid);
       if (parent && parent.children) {
         parent.children.push(nodeWithUids);
-        this._save('app_ui_tree', this.uiTree);
+        this._save(UI_TREE_KEY, this.uiTree);
         eventBus.emit('datastore:uiTree-updated', { uiTree: this.uiTree });
       } else {
-        console.error(`_addNode Error: Parent with UID ${effectiveParentUid} not found or has no children array.`);
+        console.error(`_addNode Error: Parent with UID ${effectiveParentUid} not found.`);
       }
       return;
     }
   
-    console.error('_addNode Error: Invalid payload. Must provide parent/target or sibling identifier + position.', payload);
+    console.error('_addNode Error: Invalid payload. Must provide parent/target or sibling identifier.', payload);
   }
-  
+    
   _updateNode(payload) {
     let { targetUid, targetQuery, newNodeData, siblingUid, siblingQuery, position } = payload;
   

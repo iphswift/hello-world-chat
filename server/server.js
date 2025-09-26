@@ -16,15 +16,18 @@ const genAI = new GoogleGenAI({ apiKey: process.env.GOOGLE_API_KEY });
 const COMPLETE_FRAMEWORK_PROMPT = `
     # COMPLETE FRAMEWORK DOCUMENT: Your Developer's Guide
 
-    ## 1. Core Philosophy: The Application is Data
+    ## 1. The Domain Language (CRITICAL)
+    This document defines a strict, non-negotiable domain language. Every key, command name, and property you use in your JSON output MUST exactly match the definitions provided below. Do not invent or approximate names. Treat this document as a formal API specification.
+
+    ## 2. Core Philosophy: The Application is Data
     Your fundamental task is to generate JSON commands that manipulate three core data objects which define the entire application.
     - \`uiTree\`: Represents HTML structure.
     - \`styles\`: Represents CSS styling.
     - \`controllerLogic\`: Represents JavaScript behavior.
 
-    ## 2. The Three Pillars of State (Data Models with Examples)
+    ## 3. The Three Pillars of State (Data Models with Examples)
 
-    ### 2.1. The \`uiTree\` Object (HTML Structure)
+    ### 3.1. The \`uiTree\` Object (HTML Structure)
     - A JSON representation of the DOM. You MUST use this structure:
     - \`tag\`: string (e.g., 'div', 'span').
     - \`uid\`: string (System-generated, you CANNOT set this).
@@ -48,7 +51,7 @@ const COMPLETE_FRAMEWORK_PROMPT = `
     }
     \`\`\`
 
-    ### 2.2. The \`styles\` Object (CSS Styling)
+    ### 3.2. The \`styles\` Object (CSS Styling)
     - A dictionary of reusable CSS classes (CSS-in-JS).
     - **Keys:** BEM-style class names or \`@keyframes animation-name\`.
     - **Values:** Objects of camelCased CSS properties. Nested objects are for pseudo-selectors and keyframe steps.
@@ -73,7 +76,7 @@ const COMPLETE_FRAMEWORK_PROMPT = `
     }
     \`\`\`
 
-    ### 2.3. The \`controllerLogic\` Object (JavaScript Behavior)
+    ### 3.3. The \`controllerLogic\` Object (JavaScript Behavior)
     - A dictionary of event handlers.
     - **Keys:** The event name to listen for (e.g., 'ui:submit-request').
     - **Values:** An object with the structure: \`{ args: ['payload'], body: '...' }\`.
@@ -88,7 +91,7 @@ const COMPLETE_FRAMEWORK_PROMPT = `
     }
     \`\`\`
 
-    ## 3. The \`handlerContext\` API (Methods You Must Call)
+    ## 4. The \`handlerContext\` API (Methods You Must Call)
     When you write code for a logic handler's \`body\`, \`this\` refers to the \`handlerContext\`. This is your ONLY way to interact with the application.
 
     **API Methods & Examples:**
@@ -101,7 +104,7 @@ const COMPLETE_FRAMEWORK_PROMPT = `
     - \`this.getValue(query)\` / \`this.clearValue(query)\`: Manages the state of live form elements.
       // Example: this.clearValue({ queryId: 'main-input-field' });
 
-     ## 4. Available Commands & Examples
+     ## 5. Available Commands & Examples
     Your final JSON output must use only these commands as defined below. Do not invent new parameters.
 
     **\`addNode\`**
@@ -181,9 +184,34 @@ const COMPLETE_FRAMEWORK_PROMPT = `
     ## 5. Your Guiding Principles
     - **Persona:** Act as an expert UI/UX designer and senior developer.
     - **Prioritize Functional & Interactive Innovation:** A truly great solution often introduces a new capability or improves a user's workflow, not just visual appeal. Before proposing a simple restyle, always consider if a change in functionality or interaction would be more impactful.
+    - **Separate Concerns (New Principle):** Break down complex actions into smaller, single-purpose event handlers. Instead of creating one large, monolithic function, create several small handlers and chain them together using \`this.emit()\`. This makes your logic cleaner, more reusable, and easier to debug.
+    - **Keep Code For A Node In Its Own Logic Handler (New Principle):** Each node's behavior should be encapsulated within its own event handler. Avoid cross-node dependencies by ensuring that each node's logic is self-contained. If nodes need to interact, use events to communicate rather than direct references.
     - **Structure:** Use BEM and create semantic, accessible layouts.
     - **Aesthetics:** Use white space, grids, and cohesive, accessible color/typography.
     - **Feedback & Visibility:** Ensure your changes are immediately visible and perform self-correction checks.
+
+    ## 6. Common Mistakes to Avoid (CRITICAL)
+    Review this list before generating your final response to prevent common errors.
+
+    - **Mistake: Invalid Commas.** Forgetting a comma between elements or adding a trailing comma after the last element.
+      - **Correction:** Ensure every element in an array or object is separated by a comma, except for the very last one.
+
+    - **Mistake: Using Semicolons.** Adding semicolons at the end of lines. Semicolons are not used in JSON.
+      - **Correction:** Only use commas to separate elements.
+
+    - **Mistake: Improper String Escaping.** Forgetting to escape newlines (\`\\n\`) and double quotes (\`\\"\`) inside a logic handler's \`body\`.
+      - **Correction:** The \`body\` string MUST be a single line with newlines and quotes properly escaped.
+
+    - **Mistake: Mixing Command Parameters.** Using parameters from two different modes in one command (e.g., using \`targetQuery\` from Child Mode with \`position\` from Sibling Mode).
+      - **Correction:** Use only the parameters specified for a single mode.
+
+    - **Mistake: Setting System-Managed Fields.** Manually adding a \`uid\` key to a new node.
+      - **Correction:** NEVER include a \`uid\` key in any \`payload\` or \`newNodeData\` object. The system generates UIDs automatically.
+
+     ## 7. Your Guiding Principles
+    - **Persona:** Act as an expert UI/UX designer and senior developer.
+    - **Prioritize Functional & Interactive Innovation:** ...
+    - **Structure:** Use BEM and create semantic, accessible layouts.
 `;
 
 const VERIFICATION_RULES = `
@@ -192,6 +220,34 @@ const VERIFICATION_RULES = `
  * If the JSON is valid, return it unmodified.
  * If the JSON is invalid, return a corrected version, explaining the changes in the 'responseText' field.
  * Your output MUST be a single, valid JSON object.
+ */
+
+// ---------------------------------
+// SECTION 0: FUNDAMENTAL JSON SYNTAX RULES
+// ---------------------------------
+
+/**
+ * The following are the universal rules for the JSON data interchange format. The entire input string MUST adhere to these rules before its content is validated against the application-specific schema.
+ *
+ * 1.  **Structure:** Data is organized in objects (key-value pairs) or arrays (ordered lists).
+ * - Objects are enclosed in curly braces \`{}\`.
+ * - Arrays are enclosed in square brackets \`[]\`.
+ *
+ * 2.  **Keys:** Keys in an object MUST be strings enclosed in DOUBLE quotes (\`"\`).
+ *
+ * 3.  **Values:** A value can be one of seven types: a string, a number, an object, an array, \`true\`, \`false\`, or \`null\`.
+ *
+ * 4.  **Strings:** All strings (both keys and string values) MUST be enclosed in DOUBLE quotes (\`"\`). Single quotes are NOT allowed.
+ * - Special characters inside strings MUST be escaped with a backslash (\`\\\`), including the double quote itself (\`\\"\`), the backslash (\`\\\\\`), and control characters like newlines (\`\\n\`).
+ *
+ * 5.  **Separators (CRITICAL):**
+ * - Key-value pairs within an object are separated by commas (\`,\`).
+ * - Elements within an array are separated by commas (\`,\`).
+ * - A comma MUST NOT be placed after the last element in an array or the last key-value pair in an object. This is a **trailing comma** and is strictly forbidden.
+ *
+ * 6.  **Whitespace:** Only four characters are valid as whitespace between tokens: space ( ), horizontal tab (\\t), newline (\\n), and carriage return (\\r). Non-standard whitespace (like non-breaking spaces \` \`) is forbidden.
+ *
+ * 7.  **Comments:** The JSON format does NOT support comments.
  */
 
 // ---------------------------------
@@ -308,6 +364,22 @@ const VERIFICATION_RULES = `
  * - \`this.clearValue(query)\`: To clear the value of a form element.
  *
  * 3.  **UIDS ARE DYNAMIC:** The 'body' code cannot know a node's UID before it is created. It MUST use \`this.queryUiTree()\` to find a node and get its UID dynamically if needed (e.g., \`const node = this.queryUiTree({queryId: 'my-node'}); const uid = node.uid;\`).
+ * 4.  **NO COMMENTS:** The 'body' string MUST NOT contain any JavaScript comments (// or /* */). All comments must be stripped out.
+ * 5.  **EVENT PAYLOADS:** The \`payload\` within a \`behavior.eventHandlers\` object is ONLY for viewState updates (using 'propToUpdate' and 'valueFrom'). It MUST NOT be used to pass the 'domEvent' or 'node' objects, as the system provides these automatically.
+ */
+ */
+// ---------------------------------
+// SECTION 5: BEST PRACTICES FOR LOGIC STRINGS
+// ---------------------------------
+
+/**
+ * To prevent JSON parsing errors, the following best practices for the 'body' string are strongly enforced.
+ *
+ * 1.  **QUOTE USAGE:** To minimize escaping errors, always use single quotes (') for strings inside your JavaScript code. 
+ * - CORRECT: const message = 'Hello World';
+ * - INCORRECT: const message = "Hello World"; (This would require escaping: \\"Hello World\\")
+ *
+ * 2.  **NEWLINE ESCAPING:** The entire 'body' string must be a valid, single-line JSON string. All literal newlines MUST be escaped as \\n.
  */
 `;
 
@@ -495,7 +567,17 @@ async function createActionPlan(chosenStrategy, model) {
         **CONTEXT:**
         The Chosen Implementation Strategy: "${chosenStrategy}"
 
-        **CRITICAL RULE FOR LOGIC:** When writing the 'body' for a logic handler, you are writing a JavaScript string that will be embedded in a JSON file. You **MUST** properly escape all characters, especially double quotes (") and newlines (\\n), to ensure the final JSON is valid.
+        **CRITICAL TECHNIQUE FOR LOGIC STRINGS:**
+        To guarantee valid JSON, you MUST build the 'body' string as a single line from the start.
+
+        - **DO THIS (Concatenate with '\\n'):**
+          'const fullContainer = this.getDOMElement({ uid: \\'node-0\\' });\\nif (!fullContainer) {\\n  console.error(\\'Container not found!\\');\\n}'
+        
+        - **DO NOT DO THIS (Write a multi-line block):**
+          \`const fullContainer = this.getDOMElement({ uid: 'node-0' });
+          if (!fullContainer) {
+            console.error('Container not found!');
+          }\`
 
         **OUTPUT (First, define all necessary new BEM-style class names and \`queryId\`s. Then, create a numbered action plan using only valid commands like \`addStyle\`, \`addNode\`, \`updateNode\`, \`addLogic\`, etc.):**
     `;
@@ -511,7 +593,17 @@ async function generateFinalJson(messageText, actionPlan, model) {
         ${JSON.stringify(fewShotExamples.map(e => ({ plan: e.plan, json: e.json })), null, 2)}
         ---
 
-        **CRITICAL RULE FOR LOGIC:** When writing the 'body' for a logic handler, you are writing a JavaScript string that will be embedded in a JSON file. You **MUST** properly escape all characters, especially double quotes (") and newlines (\\n), to ensure the final JSON is valid.
+        **CRITICAL TECHNIQUE FOR LOGIC STRINGS:**
+        To guarantee valid JSON, you MUST build the 'body' string as a single line from the start.
+
+        - **DO THIS (Concatenate with '\\n'):**
+          'const fullContainer = this.getDOMElement({ uid: \\'node-0\\' });\\nif (!fullContainer) {\\n  console.error(\\'Container not found!\\');\\n}'
+        
+        - **DO NOT DO THIS (Write a multi-line block):**
+          \`const fullContainer = this.getDOMElement({ uid: 'node-0' });
+          if (!fullContainer) {
+            console.error('Container not found!');
+          }\`
 
         **CRITICAL INSTRUCTION:** The examples show a 'plan' and its corresponding 'json' object. Your job is to generate **ONLY the value of the 'json' key** for the current plan. Your output must be a single JSON object starting with { and ending with }.
 
@@ -528,14 +620,26 @@ async function generateFinalJson(messageText, actionPlan, model) {
 // NEW STEP 9: Verify and Correct the Final JSON
 async function verifyAndCorrectJson(generatedJson, model) {
     const prompt = `
-    **You are an automated linter and repair tool.** Your only purpose is to find and fix errors in a JSON object based on the provided schema.
+        **You are an automated and silent JSON linter and repair tool.** Your only goal is to make the incoming text a perfectly valid JSON object that strictly follows the schema in the REFERENCE DOCUMENT.
 
-    **JSON to Review:**
-    ---
-    ${generatedJson}
-    ---
+        **ABSOLUTE REQUIREMENT:** Your final output MUST be a single, valid JSON object and nothing else. Do not add any text, explanations, or markdown formatting before or after the JSON.
 
-    **TASK:** Review the JSON against the rules in the REFERENCE DOCUMENT. If the JSON is already perfect, return it **unmodified**. If you find any errors (especially invalid command structures, incorrect escaping in strings, or use of forbidden fields like 'uid'), return a new, corrected version of the entire JSON object. Your output MUST be a single, valid JSON object and nothing else.
+        **JSON to Review:**
+        ---
+        ${generatedJson}
+        ---
+
+        **TASK:**
+        1. First, check if the entire string is syntactically valid JSON. If not, fix it.
+        2. Then, meticulously review the now-valid JSON against every rule in the REFERENCE DOCUMENT.
+        3. If any rules are violated, correct the JSON.
+        4. If the JSON is already perfect, return it unmodified.
+
+        **Verification Checklist (Pay special attention to these):**
+        1.  **STRING ESCAPING (CRITICAL):** Check EVERY 'body' string in the logic handlers. It MUST be a valid **single-line** JSON string. All literal newlines MUST have been converted to the '\\n' character.
+        2.  **COMMAND STRUCTURE:** Ensure every command perfectly matches its documented structure.
+        3.  **EVENT PAYLOADS:** Check EVERY \`behavior\` object. The \`payload\` key inside an event handler is ONLY for \`viewState\` updates. Remove any invalid keys like \`domEvent\` or \`node\`.
+        4.  **COMMENTS:** Remove all JavaScript comments (// or /* */) from logic handler \`body\` strings.
 `;
 // Use the specialized, lean verification schema instead of the full prompt
 return executeStep(prompt, model, VERIFICATION_RULES); 
