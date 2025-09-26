@@ -69,7 +69,8 @@ class Store {
     eventBus.on('datastore:addStyle', this._addStyle.bind(this));
     eventBus.on('datastore:updateStyle', this._updateStyle.bind(this));
     eventBus.on('datastore:removeStyle', this._removeStyle.bind(this));
-    
+    eventBus.on('datastore:updateSystemMessage', this._updateSystemMessage.bind(this)); // Register new event
+
     // Initial broadcast to sync the app on startup
     this.broadcastState();
     console.log("Event-driven DataStore initialized and listening. 💾");
@@ -165,94 +166,179 @@ class Store {
 
   // --- Event Handlers ---
 
+
   _addNode(payload) {
-    const parent = this._findNodeByUid(this.uiTree, payload.parentUid);
-    if (parent && parent.children) {
-      const nodeWithUids = addUidsToTree(payload.nodeToAdd);
-      parent.children.push(nodeWithUids);
-      this._save('app_ui_tree', this.uiTree);
-      eventBus.emit('datastore:uiTree-updated', { uiTree: this.uiTree });
-    }
-  }
-
-_removeNode(payload) {
-    let { targetUid, targetQuery } = payload;
-
-    if (!targetUid && targetQuery) {
-        const foundNode = this.findNodeByQuery(targetQuery);
-        if (foundNode) {
-            targetUid = foundNode.uid;
-        } else {
-            console.error(`_removeNode Error: No node found for query`, targetQuery);
-            return;
-        }
-    }
-
-    if (!targetUid) {
-        console.error(`_removeNode Error: No targetUid or valid targetQuery was provided.`);
+    const { parentUid, targetUid, siblingUid, siblingQuery, position, nodeToAdd } = payload;
+    const effectiveParentUid = parentUid || targetUid; 
+    const nodeWithUids = addUidsToTree(nodeToAdd);
+  
+    // Case 1: Insert as a sibling using either UID or a query
+    if ((siblingUid || siblingQuery) && (position === 'before' || position === 'after')) {
+      let siblingNode = null;
+      if (siblingUid) {
+        siblingNode = this._findNodeByUid(this.uiTree, siblingUid);
+      } else { // siblingQuery must exist
+        siblingNode = this.findNodeByQuery(siblingQuery);
+      }
+  
+      if (!siblingNode) {
+        console.error(`_addNode Error: Could not find sibling node with identifier:`, {siblingUid, siblingQuery});
         return;
+      }
+  
+      const location = this._findParentAndIndexByUid(this.uiTree, siblingNode.uid);
+      if (location && location.parent && location.parent.children) {
+        const { parent, index } = location;
+        const insertionIndex = position === 'before' ? index : index + 1;
+        parent.children.splice(insertionIndex, 0, nodeWithUids);
+        this._save('app_ui_tree', this.uiTree);
+        eventBus.emit('datastore:uiTree-updated', { uiTree: this.uiTree });
+      } else {
+        console.error(`_addNode Error: Could not find parent for resolved sibling with UID ${siblingNode.uid}.`);
+      }
+      return;
     }
-    
-    // 1. Handle the case
-    //  where the root node is the target
-    if (this.uiTree && this.uiTree.uid === payload.targetUid) {
-      this.uiTree = null;
-      this._save(UI_TREE_KEY, this.uiTree);
-      eventBus.emit('datastore:uiTree-updated', { uiTree: this.uiTree });
-      return; // Exit early
+  
+    // Case 2: Add as a child (the default behavior)
+    if (effectiveParentUid) {
+      const parent = this._findNodeByUid(this.uiTree, effectiveParentUid);
+      if (parent && parent.children) {
+        parent.children.push(nodeWithUids);
+        this._save('app_ui_tree', this.uiTree);
+        eventBus.emit('datastore:uiTree-updated', { uiTree: this.uiTree });
+      } else {
+        console.error(`_addNode Error: Parent with UID ${effectiveParentUid} not found or has no children array.`);
+      }
+      return;
     }
-
-    // 2. Existing logic for all non-root nodes
-    const parent = this._findParentByUid(this.uiTree, payload.targetUid);
-    if (parent && parent.children) {
-      parent.children = parent.children.filter(child => child.uid !== payload.targetUid);
-      this._save(UI_TREE_KEY, this.uiTree);
-      eventBus.emit('datastore:uiTree-updated', { uiTree: this.uiTree });
-    }
+  
+    console.error('_addNode Error: Invalid payload. Must provide parent/target or sibling identifier + position.', payload);
   }
-
+  
   _updateNode(payload) {
-    let { targetUid, targetQuery, newNodeData } = payload;
-
-    // If a query is provided and we don't have a UID, resolve the query.
-    if (!targetUid && targetQuery) {
-        const foundNode = this.findNodeByQuery(targetQuery);
-        if (foundNode) {
-            targetUid = foundNode.uid; // Resolve the query to a UID.
-        } else {
-            console.error(`_updateNode Error: No node found for query`, targetQuery);
-            return;
-        }
-    }
-
-    if (!targetUid) {
-        console.error(`_updateNode Error: No targetUid or valid targetQuery was provided.`);
+    let { targetUid, targetQuery, newNodeData, siblingUid, siblingQuery, position } = payload;
+  
+    // Case 1: Update a node based on its sibling's position using either UID or a query.
+    if ((siblingUid || siblingQuery) && (position === 'before' || position === 'after')) {
+      let siblingNode = null;
+      if (siblingUid) {
+        siblingNode = this._findNodeByUid(this.uiTree, siblingUid);
+      } else { // siblingQuery must exist
+        siblingNode = this.findNodeByQuery(siblingQuery);
+      }
+  
+      if (!siblingNode) {
+        console.error(`_updateNode Error: Could not find sibling node with identifier:`, {siblingUid, siblingQuery});
         return;
+      }
+  
+      const location = this._findParentAndIndexByUid(this.uiTree, siblingNode.uid);
+      if (location && location.parent && location.parent.children) {
+        const { parent, index: siblingIndex } = location;
+        const targetIndex = position === 'before' ? siblingIndex - 1 : siblingIndex + 1;
+  
+        if (targetIndex >= 0 && targetIndex < parent.children.length) {
+          const originalNode = parent.children[targetIndex];
+          const finalNode = deepMerge(originalNode, newNodeData);
+          parent.children[targetIndex] = addUidsToTree(finalNode);
+          
+          this._save(UI_TREE_KEY, this.uiTree);
+          eventBus.emit('datastore:uiTree-updated', { uiTree: this.uiTree });
+        } else {
+          console.error(`_updateNode Error: No node found at position '${position}' relative to resolved sibling UID ${siblingNode.uid}.`);
+        }
+      } else {
+        console.error(`_updateNode Error: Could not find parent for resolved sibling with UID ${siblingNode.uid}.`);
+      }
+      return;
     }
-
-    // 1. Handle the case where the root node is the target
+  
+    // Case 2: Fallback to existing direct targeting logic (UID or query).
+    if (!targetUid && targetQuery) {
+      const foundNode = this.findNodeByQuery(targetQuery);
+      if (foundNode) {
+        targetUid = foundNode.uid;
+      } else {
+        console.error(`_updateNode Error: No node found for query`, targetQuery);
+        return;
+      }
+    }
+  
+    if (!targetUid) {
+      console.error(`_updateNode Error: A valid target was not provided.`);
+      return;
+    }
+  
     if (this.uiTree && this.uiTree.uid === targetUid) {
-      // Deep merge the new data into the existing tree
       this.uiTree = deepMerge(this.uiTree, newNodeData);
-      // Ensure UIDs are still correct after merge (deepMerge doesn't handle this)
       this.uiTree = addUidsToTree(this.uiTree);
       this._save(UI_TREE_KEY, this.uiTree);
       eventBus.emit('datastore:uiTree-updated', { uiTree: this.uiTree });
-      return; // Exit early
+      return;
     }
-
-    // 2. Existing logic for all non-root nodes
+  
     const location = this._findParentAndIndexByUid(this.uiTree, targetUid);
     if (location && location.parent) {
       const { parent, index } = location;
       const originalNode = parent.children[index];
-      // Deep merge the new data into the original node
       const finalNode = deepMerge(originalNode, newNodeData);
-      parent.children[index] = addUidsToTree(finalNode); // Re-run addUidsToTree in case children were added
+      parent.children[index] = addUidsToTree(finalNode);
       this._save(UI_TREE_KEY, this.uiTree);
       eventBus.emit('datastore:uiTree-updated', { uiTree: this.uiTree });
     } else {
       console.error(`_updateNode Error: Node with UID ${targetUid} not found.`);
+    }
+  }
+
+_removeNode(payload) {
+  let { targetUid, targetQuery } = payload;
+
+  // 1. Resolve the query to a UID if necessary.
+  if (!targetUid && targetQuery) {
+      const foundNode = this.findNodeByQuery(targetQuery);
+      if (foundNode) {
+          targetUid = foundNode.uid; // Assign to our single source-of-truth variable.
+      } else {
+          console.error(`_removeNode Error: No node found for query`, targetQuery);
+          return;
+      }
+  }
+
+  if (!targetUid) {
+      console.error(`_removeNode Error: No targetUid or valid targetQuery was provided.`);
+      return;
+  }
+  
+  // 2. Handle removing the root node.
+  if (this.uiTree && this.uiTree.uid === targetUid) {
+    this.uiTree = null;
+    this._save(UI_TREE_KEY, this.uiTree);
+    eventBus.emit('datastore:uiTree-updated', { uiTree: this.uiTree });
+    return;
+  }
+
+  // 3. Find the node's parent and remove it from the children array.
+  const location = this._findParentAndIndexByUid(this.uiTree, targetUid);
+  if (location && location.parent && location.parent.children) {
+    location.parent.children.splice(location.index, 1); // Use splice for direct removal.
+    this._save(UI_TREE_KEY, this.uiTree);
+    eventBus.emit('datastore:uiTree-updated', { uiTree: this.uiTree });
+  } else {
+    // This is not necessarily an error, the node might have already been removed.
+    // console.warn(`_removeNode: Node with UID ${targetUid} not found or has no parent.`);
+  }
+}
+
+  _updateSystemMessage(payload) {
+    const { message } = payload;
+    const targetNode = this.findNodeByQuery({ queryId: 'system-status-message' });
+    if (targetNode) {
+      // Create the update payload as if it were a regular updateNode command
+      const updatePayload = {
+        targetUid: targetNode.uid,
+        newNodeData: { children: [message] }
+      };
+      this._updateNode(updatePayload);
     }
   }
 

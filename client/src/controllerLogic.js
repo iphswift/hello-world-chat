@@ -37,16 +37,34 @@ export const controllerLogic = {
     'message:submit': {
         isAsync: true,
         args: ['payload'],
-        // THIS IS THE CORRECT BODY
         body: `
             if (this.processing) return;
             this.processing = true;
-
+        
             const fullContainer = this.queryUiTree({ presentation: { className: 'full-container' } });
             if (fullContainer) {
+                // Add the spinner
                 this.emit('datastore:addNode', { parentUid: fullContainer.uid, nodeToAdd: this.spinnerNode });
+                
+                // NEW: Add the status message node right after the spinner
+                const statusMessageNode = {
+                    tag: 'div',
+                    queryId: 'system-status-message',
+                    attributes: { 
+                        style: { 
+                            position: 'absolute',
+                            top: 'calc(50% + 40px)', // Position below spinner
+                            textAlign: 'center',
+                            width: '100%',
+                            color: '#555',
+                            fontFamily: '"Roboto", sans-serif',
+                        }
+                    },
+                    children: ['Initializing...']
+                };
+                this.emit('datastore:addNode', { siblingUid: 'system-loading-spinner', position: 'after', nodeToAdd: statusMessageNode });
             }
-
+        
             const userNode = { 
                 tag: 'div', 
                 presentation: { className: 'user-bubble' }, 
@@ -57,12 +75,12 @@ export const controllerLogic = {
                 this.emit('datastore:addNode', { parentUid: chatContainer.uid, nodeToAdd: userNode });
                 this.emit('ui:scroll-to-bottom');
             }
-
+        
             const inputElement = this.getDOMElement({ uid: payload.targetUid });
             if (inputElement) {
                 inputElement.value = '';
             }
-
+        
             this.emit('api:send-message', { messageText: payload.messageText });
         `
     },
@@ -177,10 +195,11 @@ export const controllerLogic = {
     'process:complete': {
         args: ['payload'],
         body: `
-            this.processing = false;
-            this.emit('datastore:removeNode', { targetUid: 'system-loading-spinner' });
-        `
-    },
+        this.processing = false;
+     
+        this.emit('datastore:removeNode', { targetQuery: { queryId: 'system-status-message' }});
+        this.emit('datastore:removeNode', { targetUid: 'system-loading-spinner' });
+    `    },
         
     'error:api': {
         args: ['payload'],
