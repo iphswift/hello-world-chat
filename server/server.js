@@ -94,7 +94,7 @@ const COMPLETE_FRAMEWORK_PROMPT = `
     ## 4. The \`handlerContext\` API (Methods You Must Call)
     When you write code for a logic handler's \`body\`, \`this\` refers to the \`handlerContext\`. This is your ONLY way to interact with the application.
 
-    **API Methods & Examples:**
+    **API Methods & Examples (UNLESS EXPLICITLY DEMONSTRATED, ASSUME THEY HAVE NO RETURN VALUE):**
     - \`this.emit(eventName, payload)\`: Triggers other events.
       // Example: this.emit('datastore:addNode', { parentUid: 'node-5', nodeToAdd: myNode });
     - \`this.queryUiTree(query)\`: Finds a node in the \`uiTree\`.
@@ -330,21 +330,48 @@ const VERIFICATION_RULES = `
  * @structure uiTree Node
  * @description The schema for any node object used in a command's 'payload'.
  * @property {string} tag - An HTML tag name (e.g., 'div'). REQUIRED.
- * @property {string} [uid] - ILLEGAL. Commands MUST NOT set the 'uid' property. The system generates it.
+ * @property {string} [uid] - ILLEGAL. Commands MUST NOT set the 'uid' property.
  * @property {string} [queryId] - A human-readable ID for querying.
- * @property {object} [presentation] - Style binding, e.g., { "className": "my-class" }.
+ * @property {object} [presentation] - A 'Presentation Object' for style binding.
  * @property {object} [attributes] - HTML attributes, e.g., { "placeholder": "text" }.
- * @property {object} [behavior] - Event handling configuration.
+ * @property {object} [behavior] - A 'Behavior Object' that defines event handling.
  * @property {array} [children] - An array of strings or other uiTree Node objects.
+ * @rule ARCHITECTURAL RULE: The 'behavior' property is DECLARATIVE. It is ONLY for 'eventHandlers' that 'emit' a custom event name. It MUST NOT contain executable code ('args' or 'body'). All executable code MUST be defined in a separate 'addLogic' or 'updateLogic' command.
  */
+
+/**
+ * @structure Presentation Object
+ * @description The required structure for a 'presentation' property in a uiTree Node.
+ * @property {string} className - A space-separated list of CSS class names. REQUIRED.
+ * @rule This object MUST contain the 'className' key.
+ */
+ 
+
+/**
+ * @structure Behavior Object
+ * @description The required structure for a 'behavior' property in a uiTree Node.
+ * @property {object} eventHandlers - An object containing one or more 'EventHandler Object' definitions. REQUIRED.
+ * @rule This object MUST contain the 'eventHandlers' key.
+ */
+ 
+/**
+ * @structure EventHandler Object
+ * @description The required structure for a specific event like 'click' or 'input'.
+ * @property {string} emit - The name of the custom event to emit when the DOM event occurs. REQUIRED.
+ * @property {object} [payload] - Optional data for a viewState update.
+ * @rule An EventHandler Object MUST contain an 'emit' key. It MUST NOT contain 'args' or 'body'.
+ */
+
  
 /**
  * @structure Query Object
  * @description The schema for a 'targetQuery' object.
  * @property {string} [uid]
  * @property {string} [queryId]
- * @property {object} [presentation] - e.g., { "className": "my-class" }
+ * @property {object} [presentation] - A 'Presentation Object' used for querying by style class.
  * @rule A query object can use any combination of keys from the uiTree Node structure to find a unique node.
+ * @rule CRITICAL: The query structure MUST exactly mirror the nested structure of the uiTree Node. For example, to query by a class name, you MUST use 'presentation: { className: "..." }'.
+ * @example To find a node like '{ "tag": "div", "presentation": { "className": "chat-container" } }', the correct query is '{ "presentation": { "className": "chat-container" } }'.
  */
 
 // ---------------------------------
@@ -476,7 +503,7 @@ async function deconstructRequest(userMessage, chatHistory, model) {
     return executeStep(prompt, model);
 }
 
-// STEP 2: Analyze Current State (NEW)
+// STEP 2: Analyze Current State
 async function analyzeCurrentState(problemStatement, currentState, model) {
     const prompt = `
         You are redesigning a webpage. To do so, you first need to take notes on relevant context with the existing implementation. Your task is to analyze the current application state to find components, styles, and logic relevant to the problem. Do not suggest solutions yet; your only goal is to gather context.
@@ -527,125 +554,138 @@ async function formulateProposition(solutions, stateAnalysis, model) {
     `;
     return executeStep(prompt, model);
 }
-// --- PHASE 2: IMPLEMENTATION ---
 
-// STEP 5: Component Breakdown & Technical Specification
-async function getTechnicalSpecification(designProposition, stateAnalysis, model) {
+// --- PHASE 2: IMPLEMENTATION (REFACTORED) ---
+
+// NEW COMBINED STEP 5: Create the full implementation plan
+async function createImplementationPlan(designProposition, stateAnalysis, messageText, model) {
     const prompt = `
-        To build a website from a plan, the first step is to identifty the technical requirements. Your task is to translate the conceptual design into a detailed list of technical requirements.
-        
+        You are an expert full-stack developer and solution architect. Your task is to create a complete technical implementation plan based on a high-level design proposition.
+
+        You must perform the following three tasks in order, using markdown headings for each section:
+
+        1.  **## Technical Requirements**
+            Based on the design proposition and the current state of the application, list the specific new UI components, style changes (including new BEM classes), and logic handlers needed.
+
+        2.  **## Implementation Strategies**
+            Brainstorm three distinct technical strategies to meet the requirements. For each strategy, briefly describe the approach and list its pros and cons (e.g., reusability, performance, complexity, safety).
+
+        3.  **## Final Action Plan**
+            After evaluating the strategies, select the single best option. Based on that choice, write the final, step-by-step action plan.
+
+            **CRITICAL FORMATTING RULE:** This plan MUST be a numbered list written in plain English. It MUST describe the commands to be used (e.g., "Use the 'addStyle' command..."). It MUST NOT contain any JSON, code blocks, or payload examples. This is a human-readable blueprint, not machine code.
+
+            **- CORRECT Example:** "1. Add a new style for the 'rotten-bubble' class with a dark green background."
+            **- INCORRECT Example:** "1. \`addStyle\` payload: { \\"className\\": \\"rotten-bubble\\", ... }"
+
+
         **CONTEXT:**
+        User's Original Request: "${messageText}"
         The Design Proposition: "${designProposition}"
         Analysis of Current State: "${stateAnalysis}"
-        
-        **OUTPUT (A detailed technical specification listing the new UI elements, required styles, and a description of the event logic, considering the existing state):**
+
+        **OUTPUT (A structured response with the three markdown headings as specified):**
     `;
-    return executeStep(prompt, model);
+    const fullResponse = await executeStep(prompt, model);
+    
+    // Extract only the final plan part to pass to the next step
+    const planSplit = fullResponse.split('## Final Action Plan');
+    if (planSplit.length > 1) {
+        return planSplit[1].trim();
+    }
+    // Fallback if the heading is missing
+    console.warn("Warning: '## Final Action Plan' heading not found. Using full response for the plan.");
+    return fullResponse;
 }
 
-// STEP 6: Propose & Evaluate Implementation Strategies (Divergence)
-async function evaluateImplementations(technicalSpecification, chatHistory, messageText, stateAnalysis, model) {
+
+// STEP 6: Generate the JSON structure with detailed descriptions for logic.
+async function generateJsonWithDescriptions(actionPlan, messageText, model) {
     const prompt = `
-        As critical divergent stage to avoid buggy solutions, it is important to create multiple solutions and determine which one works best. Your task is to brainstorm multiple technical approaches to achieve the specification.
-        
-        **CONTEXT:**
-        Technical Specification: "${technicalSpecification}"
-        Chat History: ${JSON.stringify(chatHistory)}
-        Original Request: "${messageText}"
-        Analysis of Current State: "${stateAnalysis}"
+        Your task is to translate the final action plan into a single, perfectly-formed JSON object that adheres to all rules in the REFERENCE DOCUMENT.
 
-        **OUTPUT (Propose 2 different implementation strategies that leverage the existing state. For each, describe the approach and list its pros and cons (e.g., reusability, performance, complexity). Finally, select the best strategy to move forward with):**
-    `;
-    return executeStep(prompt, model);
-}
+        **CRITICAL INSTRUCTION FOR LOGIC:**
+        For any 'addLogic' or 'updateLogic' command, the 'body' property MUST NOT contain JavaScript code. Instead, it must contain a highly detailed, step-by-step description of the function's purpose, written as a clear English string. This description will be used by another AI to write the actual code.
 
-// STEP 7: Create the Final Action Plan (Convergence)
-async function createActionPlan(chosenStrategy, model) {
-    const prompt = `
-        Implementing a solution in a novel web framework requires a clear and concise stratetgy. This is a convergent step based on the chosen implementation strategy. Your task is to create the final, step-by-step sequence of commands.
-        
-        **CONTEXT:**
-        The Chosen Implementation Strategy: "${chosenStrategy}"
+        **EXAMPLE of a descriptive body:**
+        "This function should handle the 'Enter' keypress event on an input field. First, it must prevent the default browser action. Then, it should get the text value from the event target. If the trimmed text is not empty, it should emit a 'message:submit' event, passing the trimmed text and the target node's UID in the payload."
 
-        **CRITICAL TECHNIQUE FOR LOGIC STRINGS:**
-        To guarantee valid JSON, you MUST build the 'body' string as a single line from the start.
-
-        - **DO THIS (Concatenate with '\\n'):**
-          'const fullContainer = this.getDOMElement({ uid: \\'node-0\\' });\\nif (!fullContainer) {\\n  console.error(\\'Container not found!\\');\\n}'
-        
-        - **DO NOT DO THIS (Write a multi-line block):**
-          \`const fullContainer = this.getDOMElement({ uid: 'node-0' });
-          if (!fullContainer) {
-            console.error('Container not found!');
-          }\`
-
-        **OUTPUT (First, define all necessary new BEM-style class names and \`queryId\`s. Then, create a numbered action plan using only valid commands like \`addStyle\`, \`addNode\`, \`updateNode\`, \`addLogic\`, etc.):**
-    `;
-    return executeStep(prompt, model);
-}
-
-// STEP 8: Generate Final JSON
-async function generateFinalJson(messageText, actionPlan, model) {
-    const prompt = `
-        The existing web framework requires the response to be formatted in precise JSON. Your task is to translate the final action plan into a single, executable JSON object.
-
-        --- Here are examples showing the relationship between a plan and its JSON output. ---
-        ${JSON.stringify(fewShotExamples.map(e => ({ plan: e.plan, json: e.json })), null, 2)}
-        ---
-
-        **CRITICAL TECHNIQUE FOR LOGIC STRINGS:**
-        To guarantee valid JSON, you MUST build the 'body' string as a single line from the start.
-
-        - **DO THIS (Concatenate with '\\n'):**
-          'const fullContainer = this.getDOMElement({ uid: \\'node-0\\' });\\nif (!fullContainer) {\\n  console.error(\\'Container not found!\\');\\n}'
-        
-        - **DO NOT DO THIS (Write a multi-line block):**
-          \`const fullContainer = this.getDOMElement({ uid: 'node-0' });
-          if (!fullContainer) {
-            console.error('Container not found!');
-          }\`
-
-        **CRITICAL INSTRUCTION:** The examples show a 'plan' and its corresponding 'json' object. Your job is to generate **ONLY the value of the 'json' key** for the current plan. Your output must be a single JSON object starting with { and ending with }.
+        **CRITICAL INSTRUCTION: Your output must be a single JSON object starting with { and ending with }.**
 
         **CONTEXT:**
-        The users's Original Request: "${messageText}"
+        The user's Original Request: "${messageText}"
         Your Final Action-Plan:
         ${actionPlan}
         
         **OUTPUT (A single JSON object with 'responseText' and 'commands' keys):**
     `;
-    return executeStep(prompt, model);
+    // Use the VERIFICATION_RULES to ensure the structure is perfect
+    return executeStep(prompt, model, VERIFICATION_RULES);
 }
 
-// NEW STEP 9: Verify and Correct the Final JSON
-async function verifyAndCorrectJson(generatedJson, model) {
-    const prompt = `
-        **You are an automated and silent JSON linter and repair tool.** Your only goal is to make the incoming text a perfectly valid JSON object that strictly follows the schema in the REFERENCE DOCUMENT.
+// STEP 7: Generate JavaScript function bodies in parallel.
+async function generateFunctionBodies(jsonWithDescriptions, model) {
+    const cleanedJsonString = jsonWithDescriptions.replace(/^```json\n|```$/g, '').trim();
+    const logicCommands = [];
+    const parsedJson = JSON.parse(cleanedJsonString);
 
-        **ABSOLUTE REQUIREMENT:** Your final output MUST be a single, valid JSON object and nothing else. Do not add any text, explanations, or markdown formatting before or after the JSON.
+    // Find all commands that need code generation
+    if (parsedJson.commands && Array.isArray(parsedJson.commands)) {
+        parsedJson.commands.forEach((command, index) => {
+            if (command.command === 'addLogic' || command.command === 'updateLogic') {
+                logicCommands.push({
+                    description: command.payload.body, // The description is in the body
+                    args: command.payload.args || [], // Get the function arguments
+                    index: index // Store the original index to replace it later
+                });
+            }
+        });
+    }
 
-        **JSON to Review:**
-        ---
-        ${generatedJson}
-        ---
+    if (logicCommands.length === 0) {
+        return parsedJson; // No logic bodies to generate, return the original JSON
+    }
 
-        **TASK:**
-        1. First, check if the entire string is syntactically valid JSON. If not, fix it.
-        2. Then, meticulously review the now-valid JSON against every rule in the REFERENCE DOCUMENT.
-        3. If any rules are violated, correct the JSON.
-        4. If the JSON is already perfect, return it unmodified.
+    // Create a prompt for each function description
+    const generationPromises = logicCommands.map(logic => {
+        const prompt = `
+            You are an expert JavaScript developer specializing in writing clean, robust, and maintainable code for a specific client-side framework.
 
-        **Verification Checklist (Pay special attention to these):**
-        1.  **STRING ESCAPING (CRITICAL):** Check EVERY 'body' string in the logic handlers. It MUST be a valid **single-line** JSON string. All literal newlines MUST have been converted to the '\\n' character.
-        2.  **COMMAND STRUCTURE:** Ensure every command perfectly matches its documented structure.
-        3.  **EVENT PAYLOADS:** Check EVERY \`behavior\` object. The \`payload\` key inside an event handler is ONLY for \`viewState\` updates. Remove any invalid keys like \`domEvent\` or \`node\`.
-        4.  **COMMENTS:** Remove all JavaScript comments (// or /* */) from logic handler \`body\` strings.
-`;
-// Use the specialized, lean verification schema instead of the full prompt
-return executeStep(prompt, model, VERIFICATION_RULES); 
+            Based on the detailed description provided below, write the complete, raw JavaScript code for a function body.
+
+            **CRITICAL CONTEXT:** This function will be created with the following parameters already declared and available in its scope: ${JSON.stringify(logic.args)}.
+            **You MUST NOT redeclare these variables.** You can use them directly.
+
+            **CRITICAL RULES:**
+            1.  **Output ONLY the JavaScript code.** Do not include any explanations or markdown formatting.
+            2.  **DO NOT use any JavaScript comments (\`//\` or \`/* */\`).** The code must be completely clean of all comments.
+            3.  **Use the 'this' Context:** The code will be executed within a specific context where 'this' provides access to the framework's API: \`this.emit()\`, \`this.queryUiTree()\`, etc.
+            4.  **Use Single Quotes:** All internal string literals within your JavaScript code MUST use single quotes (').
+            
+            **Description of the function to be created:**
+            ---
+            ${logic.description}
+            ---
+
+            **Your JavaScript Code Output:**
+        `;
+        return executeStep(prompt, model);
+    });
+
+    // Execute all generation requests in parallel
+    const generatedBodies = await Promise.all(generationPromises);
+
+    // Assemble the final JSON by inserting the generated code back
+    generatedBodies.forEach((body, i) => {
+        // NEW: Clean the generated body of any markdown formatting before insertion.
+        const cleanedBody = body.replace(/^`javascript\n|```$/g, '').trim();
+
+        const originalCommandIndex = logicCommands[i].index;
+        parsedJson.commands[originalCommandIndex].payload.body = cleanedBody;
+    });
+
+    return parsedJson;
 }
-
-
 // --- Main API Endpoint ---
 
 app.post('/api/chat', async (req, res) => {
@@ -658,7 +698,7 @@ app.post('/api/chat', async (req, res) => {
         const textModel = genAI.chats.create({ model: "gemini-2.5-flash" });
         const jsonModel = genAI.chats.create({ model: "gemini-2.5-flash", generationConfig: { responseMimeType: "application/json" } });
 
-        // --- Execute the 8-Step Reasoning Chain ---
+        // --- Execute the REFACTORED Reasoning Chain ---
 
         // Phase 1: Design
         sendStatusUpdate(res, 1, 'Deconstructing request...');
@@ -677,42 +717,30 @@ app.post('/api/chat', async (req, res) => {
         const designProposition = await formulateProposition(solutions, stateAnalysis, textModel);
         console.log(`\n--- 💭 AI Thought: Step 4 - Design Proposition ---\n${designProposition}\n----------------------------------------------------`);
 
-        // Phase 2: Implementation
-        sendStatusUpdate(res, 5, 'Creating technical specification...');
-        const technicalSpecification = await getTechnicalSpecification(designProposition, stateAnalysis, textModel);
-        console.log(`\n--- 💭 AI Thought: Step 5 - Technical Specification ---\n${technicalSpecification}\n---------------------------------------------------------`);
+        // Phase 2: Implementation (REFACTORED)
+        sendStatusUpdate(res, 5, 'Creating implementation plan...');
+        const actionPlan = await createImplementationPlan(designProposition, stateAnalysis, messageText, textModel);
+        console.log(`\n--- 💭 AI Thought: Step 5 - Final Action Plan ---\n${actionPlan}\n----------------------------------------------------`);
         
-        sendStatusUpdate(res, 6, 'Evaluating implementation strategies...');
-        const chosenStrategy = await evaluateImplementations(technicalSpecification, chatHistory, messageText, stateAnalysis, textModel);
-        console.log(`\n--- 💭 AI Thought: Step 6 - Chosen Strategy ---\n${chosenStrategy}\n--------------------------------------------------`);
-        
-        sendStatusUpdate(res, 7, 'Creating final action plan...');
-        const actionPlan = await createActionPlan(chosenStrategy, textModel);
-        console.log(`\n--- 💭 AI Thought: Step 7 - Final Action Plan ---\n${actionPlan}\n----------------------------------------------------`);
-        
-         
-        sendStatusUpdate(res, 8, 'Generating final JSON response...');
-        const initialJson = await generateFinalJson(messageText, actionPlan, jsonModel);
-        console.log(`\n--- 🤖 AI Thought: Step 8 - Initial JSON Generation ---\n${initialJson}\n---------------------------------------------------------`);
+        // STEP 6: Generate JSON with descriptions
+        sendStatusUpdate(res, 6, 'Generating JSON structure...');
+        const jsonWithDescriptions = await generateJsonWithDescriptions(actionPlan, messageText, jsonModel);
+        console.log(`\n--- 🤖 AI Thought: Step 6 - Initial JSON with Descriptions ---\n${jsonWithDescriptions}\n---------------------------------------------------------`);
 
-        // --- NEW VERIFICATION STEP ---
-        sendStatusUpdate(res, 9, 'Verifying and correcting JSON...');
-        const correctedJson = await verifyAndCorrectJson(initialJson, jsonModel);
+        // STEP 7: Generate JS bodies and assemble the final JSON
+        sendStatusUpdate(res, 7, 'Generating JavaScript logic...');
+        const finalJsonObject = await generateFunctionBodies(jsonWithDescriptions, textModel);
         
-        // --- Logging and sending the final, VERIFIED payload ---
-        console.log('\n--- ✅ FINAL VERIFIED AI JSON OUTPUT ---');
-        try {
-            const parsedResponse = JSON.parse(correctedJson);
-            console.log(JSON.stringify(parsedResponse, null, 2));
-        } catch (e) {
-            console.log('--- ⚠️  Could not parse JSON, logging raw response: ---');
-            console.log(correctedJson);
-        }
+        // --- Logging and sending the final, assembled payload ---
+        console.log('\n--- ✅ FINAL ASSEMBLED AI JSON OUTPUT ---');
+        // Programmatically stringify the final object to ensure correct escaping
+        const finalJsonString = JSON.stringify(finalJsonObject, null, 2);
+        console.log(finalJsonString);
         console.log('-------------------------------------\n');
         
         const finalPayload = {
             command: 'finalResponse',
-            payload: { aiResponse: correctedJson, plan: actionPlan } // Use the corrected JSON
+            payload: { aiResponse: finalJsonString, plan: actionPlan }
         };
         res.write(`\n${JSON.stringify(finalPayload)}`);
         res.end();
