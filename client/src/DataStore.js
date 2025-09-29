@@ -63,6 +63,7 @@ class Store {
     eventBus.on('datastore:addNode', this._addNode.bind(this));
     eventBus.on('datastore:removeNode', this._removeNode.bind(this));
     eventBus.on('datastore:updateNode', this._updateNode.bind(this));
+    eventBus.on('datastore:moveNode', this._moveNode.bind(this));
     eventBus.on('datastore:addControllerEvent', this._addControllerEvent.bind(this));
     eventBus.on('datastore:removeControllerEvent', this._removeControllerEvent.bind(this));
     eventBus.on('datastore:updateControllerEvent', this._updateControllerEvent.bind(this));
@@ -296,6 +297,66 @@ class Store {
       console.error(`_updateNode Error: Node with UID ${targetUid} not found.`);
     }
   }
+
+  _moveNode(payload) {
+    let { targetUid, targetQuery, destinationUid, destinationQuery } = payload;
+
+    // 1. Resolve the target node's UID
+    let effectiveTargetUid = targetUid;
+    if (!effectiveTargetUid && targetQuery) {
+      const nodeToMove = this.findNodeByQuery(targetQuery);
+      if (nodeToMove) {
+        effectiveTargetUid = nodeToMove.uid;
+      } else {
+        console.error('_moveNode Error: Target node not found for query', targetQuery);
+        return;
+      }
+    }
+    if (!effectiveTargetUid) {
+      console.error('_moveNode Error: No target specified.');
+      return;
+    }
+
+    // 2. Find and Detach the node from its original parent
+    const originalLocation = this._findParentAndIndexByUid(this.uiTree, effectiveTargetUid);
+    if (!originalLocation || !originalLocation.parent) {
+      console.error(`_moveNode Error: Could not find original location for target UID ${effectiveTargetUid}`);
+      return;
+    }
+    const [nodeToMove] = originalLocation.parent.children.splice(originalLocation.index, 1);
+
+    // 3. Resolve the destination parent's UID
+    let effectiveDestinationUid = destinationUid;
+    if (!effectiveDestinationUid && destinationQuery) {
+      const destinationNode = this.findNodeByQuery(destinationQuery);
+      if (destinationNode) {
+        effectiveDestinationUid = destinationNode.uid;
+      } else {
+        console.error('_moveNode Error: Destination node not found for query', destinationQuery);
+        // CRITICAL: Re-attach the node to its original parent to prevent data loss
+        originalLocation.parent.children.splice(originalLocation.index, 0, nodeToMove);
+        return;
+      }
+    }
+    if (!effectiveDestinationUid) {
+      console.error('_moveNode Error: No destination specified.');
+      originalLocation.parent.children.splice(originalLocation.index, 0, nodeToMove);
+      return;
+    }
+
+    // 4. Find and Attach the node to the new parent
+    const newParent = this._findNodeByUid(this.uiTree, effectiveDestinationUid);
+    if (newParent && Array.isArray(newParent.children)) {
+      newParent.children.push(nodeToMove);
+      this._save(UI_TREE_KEY, this.uiTree);
+      eventBus.emit('datastore:uiTree-updated', { uiTree: this.uiTree });
+    } else {
+      console.error(`_moveNode Error: Destination parent with UID ${effectiveDestinationUid} not found or has no children array.`);
+      // Re-attach the node to its original parent to prevent data loss
+      originalLocation.parent.children.splice(originalLocation.index, 0, nodeToMove);
+    }
+  }
+
 
 _removeNode(payload) {
   let { targetUid, targetQuery } = payload;

@@ -127,6 +127,29 @@ export const controllerLogic = {
 
                 // After all attempts, check if we have a valid response.
                 if (parsedResponse) {
+                    const getOrder = (commandName) => {
+                        const typeOrder = { 'Node': 1, 'Style': 2, 'Logic': 3 };
+                        const actionOrder = { 'add': 1, 'update': 2, 'remove': 3 };
+                        
+                        for (const action in actionOrder) {
+                            if (commandName.startsWith(action)) {
+                                const type = commandName.replace(action, '');
+                                return { type: typeOrder[type] || 99, action: actionOrder[action] };
+                            }
+                        }
+                        return { type: 99, action: 99 }; // Default for unknown commands
+                    };
+
+                    parsedResponse.commands.sort((a, b) => {
+                        const orderA = getOrder(a.command);
+                        const orderB = getOrder(b.command);
+
+                        if (orderA.type !== orderB.type) {
+                            return orderA.type - orderB.type;
+                        }
+                        return orderA.action - orderB.action;
+                    });
+
                     // --- SUCCESS LOGIC ---
                     if (parsedResponse.responseText) {
                         const aiNode = { 
@@ -161,7 +184,15 @@ export const controllerLogic = {
                                         position: cmd.position, 
                                         newNodeData: cmd.newNodeData 
                                     });
-                                    break;                                
+                                    break; 
+                                case 'moveNode':
+                                    this.emit('datastore:moveNode', { 
+                                        targetUid: cmd.targetUid, 
+                                        targetQuery: cmd.targetQuery, 
+                                        destinationUid: cmd.destinationUid,
+                                        destinationQuery: cmd.destinationQuery
+                                    });
+                                    break;
                                 case 'removeNode':
                                     this.emit('datastore:removeNode', { targetUid: cmd.targetUid, targetQuery: cmd.targetQuery});
                                     break;

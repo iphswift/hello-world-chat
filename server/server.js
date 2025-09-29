@@ -92,6 +92,7 @@ const COMPLETE_FRAMEWORK_PROMPT = `
     \`\`\`
 
     ## 4. The \`handlerContext\` API (Methods You Must Call)
+    
     When you write code for a logic handler's \`body\`, \`this\` refers to the \`handlerContext\`. This is your ONLY way to interact with the application.
 
     **API Methods & Examples (UNLESS EXPLICITLY DEMONSTRATED, ASSUME THEY HAVE NO RETURN VALUE):**
@@ -104,8 +105,31 @@ const COMPLETE_FRAMEWORK_PROMPT = `
     - \`this.getValue(query)\` / \`this.clearValue(query)\`: Manages the state of live form elements.
       // Example: this.clearValue({ queryId: 'main-input-field' });
 
+    ### 4.1. Standard UI Event Payload
+    When a DOM event handler (like \`click\`, \`keypress\`, \`drop\`, etc.) is triggered from a \`behavior\` block in the \`uiTree\`, the system automatically passes a single \`payload\` object to your logic handler. Your handler's \`args\` should always be \`['payload']\`. This object has a consistent structure:
+    - **\`payload.node\`**: The plain JavaScript node object from the \`uiTree\` corresponding to the element that triggered the event. Use this to access state like \`uid\` or \`queryId\`.
+    - **\`payload.domEvent\`**: The raw browser Event object (e.g., MouseEvent, KeyboardEvent). Use this for event-specific details like \`domEvent.key\`, \`domEvent.clientX\`, or to call methods like \`domEvent.preventDefault()\`.
+
+    **Example Usage in a Logic Handler Body:**
+    \`\`\`javascript
+    // Assumes args: ['payload']
+    const eventKey = payload.domEvent.key;
+    const elementId = payload.node.queryId;
+    if (eventKey === 'Enter') {
+      this.emit('some:event', { id: elementId });
+    }
+    \`\`\`
+
+
      ## 5. Available Commands & Examples
     Your final JSON output must use only these commands as defined below. Do not invent new parameters.
+
+    //******************************************************************
+    **CRITICAL RULE FOR QUERYING:** When using \`targetQuery\` or \`siblingQuery\`, the query object's structure MUST exactly mirror the \`uiTree\` node's structure.
+    - To find a node by its \`queryId\`, use: \`{ "queryId": "some-id" }\`
+    - To find a node by its class, you MUST use the nested structure: \`{ "presentation": { "className": "some-class" } }\`
+    //******************************************************************
+
 
     **\`addNode\`**
     - **Description:** Adds a new node to the UI tree.
@@ -122,7 +146,7 @@ const COMPLETE_FRAMEWORK_PROMPT = `
       \`\`\`json
       {
         "command": "addNode",
-        "targetQuery": { "className": "input-container" },
+        "targetQuery": { "presentation": { "className": "input-container" } },
         "payload": { "tag": "div" }
       }
       \`\`\`
@@ -166,6 +190,23 @@ const COMPLETE_FRAMEWORK_PROMPT = `
         - \`command\`: (string, required) Must be "removeNode".
         - \`targetUid\` or \`targetQuery\`: (string or object, required) The UID or query to find the target node to remove.
 
+    **\`moveNode\`**
+    - **Description:** Moves an existing node from its current location to become a child of a new destination node. This is the **only valid way** to re-parent a node.
+    - **CRITICAL RULE:** Do NOT attempt to move nodes by using \`addNode\` or \`updateNode\` with a \`children\` array containing existing UIDs. You MUST use this command.
+    - **Parameters:**
+        - \`command\`: "moveNode"
+        - \`targetUid\` or \`targetQuery\`: The UID or query for the **node to move**.
+        - \`destinationUid\` or \`destinationQuery\`: The UID or query for the **new parent node**.
+    - **Example:**
+      \`\`\`json
+      {
+        "command": "moveNode",
+        "targetQuery": { "queryId": "main-input-field" },
+        "destinationQuery": { "queryId": "modal-body-container" }
+      }
+      \`\`\`
+
+
     **\`addStyle\` / \`updateStyle\` / \`removeStyle\`**
     - **Description:** Manages CSS classes in the styles object.
     - **Parameters:**
@@ -182,6 +223,12 @@ const COMPLETE_FRAMEWORK_PROMPT = `
 
 
     ## 5. Your Guiding Principles
+    **The Immutable Core Loop (CRITICAL):** The primary function of this application is to send a user's message to an API. You MUST NOT, under any circumstances, break this core functionality unless specifically instructed to do so. This loop consists of three key parts that you must preserve:
+    1.  The \`message:submit\` event handler, which gathers user input.
+    2.  The \`this.emit('api:send-message', ...)\` call within that handler, which triggers the backend request.
+    3.  The payload for the \`api:send-message\` event, which MUST be an object containing the user's raw text in a \`messageText\` property (e.g., \`{ messageText: userInput }\`).
+
+
     - **Persona:** Act as an expert UI/UX designer and senior developer.
     - **Prioritize Functional & Interactive Innovation:** A truly great solution often introduces a new capability or improves a user's workflow, not just visual appeal. Before proposing a simple restyle, always consider if a change in functionality or interaction would be more impactful.
     - **Separate Concerns (New Principle):** Break down complex actions into smaller, single-purpose event handlers. Instead of creating one large, monolithic function, create several small handlers and chain them together using \`this.emit()\`. This makes your logic cleaner, more reusable, and easier to debug.
@@ -192,6 +239,9 @@ const COMPLETE_FRAMEWORK_PROMPT = `
 
     ## 6. Common Mistakes to Avoid (CRITICAL)
     Review this list before generating your final response to prevent common errors.
+
+    - **Mistake: Mixing Command Parameters.** Using parameters from two different modes in one command (e.g., using \`targetQuery\` from Child Mode with \`position\` from Sibling Mode).
+      - **Correction:** Use only the parameters specified for a single mode. Do not combine them.
 
     - **Mistake: Invalid Commas.** Forgetting a comma between elements or adding a trailing comma after the last element.
       - **Correction:** Ensure every element in an array or object is separated by a comma, except for the very last one.
@@ -295,6 +345,18 @@ const VERIFICATION_RULES = `
  */
 
 /**
+ * @command moveNode
+ * @description Moves an existing node to a new parent. This is the only correct way to re-parent.
+ * @property {string} [targetUid] - The UID of the node to move. REQUIRED unless targetQuery is used.
+ * @property {object} [targetQuery] - A query to find the node to move. REQUIRED unless targetUid is used.
+ * @property {string} [destinationUid] - The UID of the new parent node. REQUIRED unless destinationQuery is used.
+ * @property {object} [destinationQuery] - A query to find the new parent node. REQUIRED unless destinationUid is used.
+ * @rule Must provide exactly one target identifier (targetUid or targetQuery).
+ * @rule Must provide exactly one destination identifier (destinationUid or destinationQuery).
+ */
+
+
+/**
  * @command addStyle / updateStyle
  * @description Adds or updates a style class.
  * @property {string} className - The name of the class or @keyframes rule. REQUIRED.
@@ -314,6 +376,7 @@ const VERIFICATION_RULES = `
  * @property {string} eventName - The name of the event. REQUIRED.
  * @property {object} payload - The event configuration object. REQUIRED.
  * @rule 'payload' MUST be an object with keys { "args": string[], "body": string }.
+ * @rule For handlers triggered by DOM events (from a node's 'behavior'), the 'body' code should expect the first argument (e.g., 'payload') to be an object: \`{ node, domEvent }\`
  */
 
 /**
@@ -336,6 +399,7 @@ const VERIFICATION_RULES = `
  * @property {object} [attributes] - HTML attributes, e.g., { "placeholder": "text" }.
  * @property {object} [behavior] - A 'Behavior Object' that defines event handling.
  * @property {array} [children] - An array of strings or other uiTree Node objects.
+ * @rule CRITICAL DATA TYPE: The 'children' property MUST always be an array. ❌ INCORRECT: "children": "some text". ✅ CORRECT: "children": ["some text"].
  * @rule ARCHITECTURAL RULE: The 'behavior' property is DECLARATIVE. It is ONLY for 'eventHandlers' that 'emit' a custom event name. It MUST NOT contain executable code ('args' or 'body'). All executable code MUST be defined in a separate 'addLogic' or 'updateLogic' command.
  */
 
@@ -384,7 +448,7 @@ const VERIFICATION_RULES = `
  * 1.  **STRING ESCAPING (CRITICAL):** The 'body' string MUST be a valid JSON string value. All internal double quotes must be escaped (\\"), all backslashes must be escaped (\\\\), and all newlines must be escaped (\\n).
  *
  * 2.  **AVAILABLE 'this' CONTEXT:** The 'this' object inside the body provides the ONLY way to interact with the application. The only available methods are:
- * - \`this.emit(eventName, payload)\`: To trigger other events.
+ * - \`this.emit(eventName, payload)\`: To trigger other events.    
  * - \`this.queryUiTree(query)\`: To find a node in the data state.
  * - \`this.getDOMElement(query)\`: To get a live DOM element from the page.
  * - \`this.getValue(query)\`: To get the current value of a form element.
@@ -408,6 +472,23 @@ const VERIFICATION_RULES = `
  *
  * 2.  **NEWLINE ESCAPING:** The entire 'body' string must be a valid, single-line JSON string. All literal newlines MUST be escaped as \\n.
  */
+`;
+
+const CODE_GENERATION_REFERENCE = `
+    # FRAMEWORK REFERENCE FOR CODE GENERATION
+
+    ## 1. The 'this' Context API (Methods You Must Call)
+    The 'this' object provides your ONLY way to interact with the application. This is a complete list. No other methods or properties exist on 'this'.
+
+    - \`this.emit(eventName, payload)\`: Triggers other events. (Assumed to have no return value).
+    - \`this.queryUiTree(query)\`: Finds a node in the \`uiTree\` data object.
+    - \`this.getDOMElement(query)\`: Returns a live HTML element from the DOM.
+    - \`this.getValue(query)\` / \`this.clearValue(query)\`: Manages form element state.
+
+    ## 2. Full Framework Schema & Rules
+    The following is the complete and exhaustive specification for all data structures, commands, and event payloads you will interact with. Adhere to it strictly.
+    ---
+    ${VERIFICATION_RULES}
 `;
 
 // --- Few-Shot Examples for JSON Generation (Remains the same) ---
@@ -488,121 +569,87 @@ async function executeStep(prompt, model, referencePrompt = COMPLETE_FRAMEWORK_P
 }
 
 // --- PHASE 1: DESIGN ---
-
-// STEP 1: Deconstruct the Request (The "Why")
-async function deconstructRequest(userMessage, chatHistory, model) {
+async function generateDesignAndPlan(messageText, chatHistory, currentState, model) {
     const prompt = `
-        You are attempting to modify an existing webpage. The user has given you a request. Your task is to analyze the user's request and the chat history to uncover the core problem.
-        
-        **CONTEXT:**
-        Chat History: ${JSON.stringify(chatHistory)}
-        User's Latest Request: "${userMessage}"
-        
-        **OUTPUT (A clear, concise problem statement identifying the primary user goal):**
+       You are an expert UI/UX designer and senior developer. Your task is to follow a structured five-step process to understand a user's request and create a final, actionable implementation plan. You will perform all steps in a single, continuous thought process.
+
+       **SHARED CONTEXT:**
+       - User's Latest Request: "${messageText}"
+       - Chat History: ${JSON.stringify(chatHistory)}
+       - Full Application State: ${currentState}
+
+       **INSTRUCTIONS:**
+       Complete the following five steps in order. Use the exact markdown headings provided. The output of each step is the context for the next step.
+
+       ---
+
+       ## Step 1: Deconstruct the Request
+       **Task:** Analyze the user's request and the chat history to uncover the core problem.
+       **Output:** A clear, concise problem statement identifying the primary user goal.
+
+       ---
+
+       ## Step 2: Analyze Current State
+       **Task:** Using the problem statement from Step 1, analyze the provided "Full Application State". Your goal is to gather context by identifying all UI components, styles, and logic relevant to the problem. Do not suggest solutions yet.
+       **Output:** A concise summary of the existing UI components, styles, or logic that the upcoming design changes will likely need to interact with or modify.
+
+       ---
+
+       **Task:** This is a creative, divergent brainstorming phase. Your goal is to propose noticeable, additive changes.
+       **Core Mandate: Bold, Additive Design.** Your primary goal is to add new elements and visual flair to the screen. Always prefer solutions that introduce new components or significantly restyle existing ones. Avoid solutions that remove or simplify the UI. Each change should be a noticeable step towards a richer, more visually dense interface.
+       **Creative Vectors (Prioritized):**
+       - **1. Structural & Aesthetic Change (Highest Priority):** How can the layout or theme be fundamentally altered? Think about adding new panels, headers, footers, visual effects (like glows, animations), or applying a comprehensive visual theme.
+       - **2. Functional Change:** How can you add a new capability? (e.g., adding a new button, a settings toggle, a new form).
+       - **3. Interactive Change:** How can the user interact differently? (e.g., a modal window, a context menu).
+       **Output:** Brainstorm 3 distinct solutions that follow the Core Mandate. For each, provide a name and a one-sentence description.
+
+       ---
+
+       ## Step 4: Formulate the Proposition
+       **Task:** This is a convergent step to select the most compelling design. Evaluate the three solutions from Step 3.
+       **Evaluation Criteria:**
+       1.  **Novelty & Engagement:** Which solution provides the most unique or satisfying user experience?
+       2.  **Effectiveness:** Which solution solves the problem most directly and intuitively?
+       3.  **Feasibility:** Which solution integrates best with the existing application state?
+       **Output:** Evaluate the solutions against the criteria. Select the one that best balances novelty and effectiveness, formulate a clear design proposition, and justify your choice.
+
+       ---
+
+       ## Step 5: Final Action Plan
+       **Task:** Based on your final design proposition from Step 4, create the complete technical implementation plan.
+       **Critical Rules for this step:**
+       - **State-Checking:** Before planning to use a 'targetQuery' or 'targetUid', you MUST verify that the element exists in the "Full Application State" you analyzed in Step 2.
+       - **Formatting:** The plan MUST be a numbered list written in plain English. It must describe the commands to be used (e.g., "Use the 'addStyle' command..."). It MUST NOT contain any JSON, code blocks, or payload examples. This is a human-readable blueprint, not machine code.
+       **Output:** The final, step-by-step technical implementation plan.
     `;
-    return executeStep(prompt, model);
-}
 
-// STEP 2: Analyze Current State
-async function analyzeCurrentState(problemStatement, currentState, model) {
-    const prompt = `
-        You are redesigning a webpage. To do so, you first need to take notes on relevant context with the existing implementation. Your task is to analyze the current application state to find components, styles, and logic relevant to the problem. Do not suggest solutions yet; your only goal is to gather context.
-        
-        **CONTEXT:**
-        The Problem to Solve: "${problemStatement}"
-        Current Application State: ${currentState}
-
-        **OUTPUT (A concise summary of the existing UI components, styles, or logic that the upcoming design changes will likely need to interact with or modify):**
-    `;
-    return executeStep(prompt, model);
-}
-
-// STEP 3: Explore Solutions (The "How")
-async function exploreSolutions(problemStatement, stateAnalysis, model) {
-    const prompt = `
-        This is a creative, divergent brainstorming phase. Your task is to generate three conceptually distinct UI/UX solutions. You **must propose at least one solution that introduces a new functionality or interaction model.**
-
-        **CREATIVE VECTORS TO EXPLORE:**
-        - **1. Functional Change:** How can the user accomplish a new task? (e.g., adding a "clear" button, a search filter, a settings toggle, a new form). This involves new event logic.
-        - **2. Interactive Change:** How can the user interact with the UI differently? (e.g., introducing drag-and-drop, a context menu on right-click, keyboard shortcuts, or a modal window).
-        - **3. Structural/Aesthetic Change:** How can the layout or theme be altered to better serve the user's goal? (e.g., reorganizing elements, adding a new panel, or applying a comprehensive visual theme).
-
-        **CONTEXT:**
-        The Problem Statement: "${problemStatement}"
-        Analysis of Current State: "${stateAnalysis}"
-
-        **OUTPUT (Brainstorm 3 distinct solutions, drawing from the creative vectors above. For each, provide a name and a one-sentence description of the new user experience):**
-    `;
-    return executeStep(prompt, model);
-}
-
-// STEP 4: Formulate the Proposition (The "What")
-async function formulateProposition(solutions, stateAnalysis, model) {
-    const prompt = `
-        This is a convergent step to select the most compelling design. Your task is to evaluate the brainstormed concepts and formulate a single, actionable design proposition.
-
-        **EVALUATION CRITERIA:**
-        1.  **Novelty & Engagement:** Which solution provides the most unique, interesting, or satisfying user experience?
-        2.  **Effectiveness:** Which solution solves the user's problem most directly and intuitively?
-        3.  **Feasibility:** Which solution integrates best with the existing application state?
-
-        **CONTEXT:**
-        Brainstormed Solutions: "${solutions}"
-        Analysis of Current State: "${stateAnalysis}"
-
-        **OUTPUT (Evaluate the solutions against the criteria above. Select the one that best balances novelty and effectiveness, and formulate a clear design proposition. Justify your choice):**
-    `;
-    return executeStep(prompt, model);
-}
-
-// --- PHASE 2: IMPLEMENTATION (REFACTORED) ---
-
-// NEW COMBINED STEP 5: Create the full implementation plan
-async function createImplementationPlan(designProposition, stateAnalysis, messageText, model) {
-    const prompt = `
-        You are an expert full-stack developer and solution architect. Your task is to create a complete technical implementation plan based on a high-level design proposition.
-
-        You must perform the following three tasks in order, using markdown headings for each section:
-
-        1.  **## Technical Requirements**
-            Based on the design proposition and the current state of the application, list the specific new UI components, style changes (including new BEM classes), and logic handlers needed.
-
-        2.  **## Implementation Strategies**
-            Brainstorm three distinct technical strategies to meet the requirements. For each strategy, briefly describe the approach and list its pros and cons (e.g., reusability, performance, complexity, safety).
-
-        3.  **## Final Action Plan**
-            After evaluating the strategies, select the single best option. Based on that choice, write the final, step-by-step action plan.
-
-            **CRITICAL FORMATTING RULE:** This plan MUST be a numbered list written in plain English. It MUST describe the commands to be used (e.g., "Use the 'addStyle' command..."). It MUST NOT contain any JSON, code blocks, or payload examples. This is a human-readable blueprint, not machine code.
-
-            **- CORRECT Example:** "1. Add a new style for the 'rotten-bubble' class with a dark green background."
-            **- INCORRECT Example:** "1. \`addStyle\` payload: { \\"className\\": \\"rotten-bubble\\", ... }"
-
-
-        **CONTEXT:**
-        User's Original Request: "${messageText}"
-        The Design Proposition: "${designProposition}"
-        Analysis of Current State: "${stateAnalysis}"
-
-        **OUTPUT (A structured response with the three markdown headings as specified):**
-    `;
-    const fullResponse = await executeStep(prompt, model);
+    // Execute the entire design process in one call
+    const fullReasoningChain = await executeStep(prompt, model);
     
     // Extract only the final plan part to pass to the next step
-    const planSplit = fullResponse.split('## Final Action Plan');
+    const planSplit = fullReasoningChain.split('## Step 5: Final Action Plan');
+    let actionPlan = fullReasoningChain; // Fallback to the full text
     if (planSplit.length > 1) {
-        return planSplit[1].trim();
+        actionPlan = planSplit[1].trim();
+    } else {
+        console.warn("Warning: '## Step 5: Final Action Plan' heading not found. Using full response for the plan.");
     }
-    // Fallback if the heading is missing
-    console.warn("Warning: '## Final Action Plan' heading not found. Using full response for the plan.");
-    return fullResponse;
+    
+    return { fullReasoningChain, actionPlan };
 }
 
 
 // STEP 6: Generate the JSON structure with detailed descriptions for logic.
-async function generateJsonWithDescriptions(actionPlan, messageText, model) {
+async function generateJsonWithDescriptions(actionPlan, messageText, model, controllerLogic) {
     const prompt = `
         Your task is to translate the final action plan into a single, perfectly-formed JSON object that adheres to all rules in the REFERENCE DOCUMENT.
+
+       **CRITICAL INSTRUCTION FOR responseText:**
+       The 'responseText' field is your chat message back to the user. It MUST be a direct, conversational reply to their request, explaining what you've just done in a friendly, non-technical way.
+
+       - **GOOD Example:** "Done! I've given the app a winter theme and added some animated falling snow, just like you asked."
+       - **BAD Example:** "I have added a 'snow-container' node and three 'snow-container__layer' child nodes, and I've also added a '@keyframes fall' style to animate them."
+
 
         **CRITICAL INSTRUCTION FOR LOGIC:**
         For any 'addLogic' or 'updateLogic' command, the 'body' property MUST NOT contain JavaScript code. Instead, it must contain a highly detailed, step-by-step description of the function's purpose, written as a clear English string. This description will be used by another AI to write the actual code.
@@ -617,6 +664,16 @@ async function generateJsonWithDescriptions(actionPlan, messageText, model) {
         Your Final Action-Plan:
         ${actionPlan}
         
+        ---
+        **IMPORTANT: The Application's CURRENT Controller Logic**
+        The following is the complete set of JavaScript functions currently defined in the application. You MUST use this to inform your decisions.
+        - If the plan requires modifying a function that already exists here, you MUST use an "updateLogic" command.
+        - If the plan requires a completely new function, you MUST use an "addLogic" command.
+        - DO NOT generate an "addLogic" command for an event name that is already present in this object.
+
+        ${JSON.stringify(controllerLogic, null, 2)}
+        ---
+        
         **OUTPUT (A single JSON object with 'responseText' and 'commands' keys):**
     `;
     // Use the VERIFICATION_RULES to ensure the structure is perfect
@@ -624,7 +681,7 @@ async function generateJsonWithDescriptions(actionPlan, messageText, model) {
 }
 
 // STEP 7: Generate JavaScript function bodies in parallel.
-async function generateFunctionBodies(jsonWithDescriptions, model) {
+async function generateFunctionBodies(jsonWithDescriptions, model, controllerLogic) {
     const cleanedJsonString = jsonWithDescriptions.replace(/^```json\n|```$/g, '').trim();
     const logicCommands = [];
     const parsedJson = JSON.parse(cleanedJsonString);
@@ -633,10 +690,20 @@ async function generateFunctionBodies(jsonWithDescriptions, model) {
     if (parsedJson.commands && Array.isArray(parsedJson.commands)) {
         parsedJson.commands.forEach((command, index) => {
             if (command.command === 'addLogic' || command.command === 'updateLogic') {
+                let originalBody = null;
+                if (command.command === 'updateLogic') {
+                    const eventName = command.eventName;
+                    if (controllerLogic && controllerLogic[eventName]) {
+                        originalBody = controllerLogic[eventName].body;
+                    }
+                }
+                
                 logicCommands.push({
-                    description: command.payload.body, // The description is in the body
-                    args: command.payload.args || [], // Get the function arguments
-                    index: index // Store the original index to replace it later
+                    description: command.payload.body,
+                    args: command.payload.args || [],
+                    index: index,
+                    isUpdate: command.command === 'updateLogic', 
+                    originalBody: originalBody 
                 });
             }
         });
@@ -648,28 +715,58 @@ async function generateFunctionBodies(jsonWithDescriptions, model) {
 
     // Create a prompt for each function description
     const generationPromises = logicCommands.map(logic => {
-        const prompt = `
-            You are an expert JavaScript developer specializing in writing clean, robust, and maintainable code for a specific client-side framework.
+        let prompt;
+        if (logic.isUpdate && logic.originalBody) {
+            // This is the new, context-rich prompt for UPDATING existing code.
+            prompt = `
+                You are an expert JavaScript developer tasked with modifying an existing function based on a specific request.
 
-            Based on the detailed description provided below, write the complete, raw JavaScript code for a function body.
+                **CRITICAL CONTEXT:** This function will be created with the following parameters already declared and available in its scope: ${JSON.stringify(logic.args)}.
+                **You MUST NOT redeclare these variables.**
 
-            **CRITICAL CONTEXT:** This function will be created with the following parameters already declared and available in its scope: ${JSON.stringify(logic.args)}.
-            **You MUST NOT redeclare these variables.** You can use them directly.
+                **CRITICAL RULES:**
+                1.  **Output ONLY the modified JavaScript code.** Do not include explanations, markdown, or comments.
+                2.  **Use the 'this' Context:** The code has access to the framework's API via \`this\`.
+                3.  **Use Single Quotes:** All internal string literals MUST use single quotes (').
 
-            **CRITICAL RULES:**
-            1.  **Output ONLY the JavaScript code.** Do not include any explanations or markdown formatting.
-            2.  **DO NOT use any JavaScript comments (\`//\` or \`/* */\`).** The code must be completely clean of all comments.
-            3.  **Use the 'this' Context:** The code will be executed within a specific context where 'this' provides access to the framework's API: \`this.emit()\`, \`this.queryUiTree()\`, etc.
-            4.  **Use Single Quotes:** All internal string literals within your JavaScript code MUST use single quotes (').
-            
-            **Description of the function to be created:**
-            ---
-            ${logic.description}
-            ---
+                **ORIGINAL JAVASCRIPT CODE TO MODIFY:**
+                ---
+                ${logic.originalBody}
+                ---
 
-            **Your JavaScript Code Output:**
-        `;
-        return executeStep(prompt, model);
+                **INSTRUCTION (What to change):**
+                ---
+                ${logic.description}
+                ---
+
+                **Your Modified JavaScript Code Output:**
+            `;
+        } else {
+            // This is the original prompt for ADDING new code from scratch.
+            prompt = `
+                You are an expert JavaScript developer specializing in writing clean, robust, and maintainable code for a specific client-side framework.
+
+                Based on the detailed description provided below, write the complete, raw JavaScript code for a function body.
+
+                **CRITICAL CONTEXT:** This function will be created with the following parameters already declared and available in its scope: ${JSON.stringify(logic.args)}.
+                **You MUST NOT redeclare these variables.** You can use them directly.
+
+                **CRITICAL RULES:**
+                1.  **Output ONLY the JavaScript code.** Do not include any explanations or markdown formatting.
+                2.  **DO NOT use any JavaScript comments (\`//\` or \`/* */\`).** The code must be completely clean of all comments.
+                3.  **Use the 'this' Context:** The code will be executed within a specific context where 'this' provides access to the framework's API: \`this.emit()\`, \`this.queryUiTree()\`, etc.
+                4.  **Use Single Quotes:** All internal string literals within your JavaScript code MUST use single quotes (').
+                
+                **Description of the function to be created:**
+                ---
+                ${logic.description}
+                ---
+
+                **Your JavaScript Code Output:**
+            `;
+        }
+
+        return executeStep(prompt, model, CODE_GENERATION_REFERENCE);
     });
 
     // Execute all generation requests in parallel
@@ -686,71 +783,76 @@ async function generateFunctionBodies(jsonWithDescriptions, model) {
 
     return parsedJson;
 }
-// --- Main API Endpoint ---
 
+async function handleAiRequest(res, userId, messageText, chatHistory, currentState, controllerLogic) {
+    console.log(`[USER: ${userId}] REQUEST: "${messageText}"`);    
+    const textModel = genAI.chats.create({ model: "gemini-2.5-flash" });
+    const jsonModel = genAI.chats.create({ model: "gemini-2.5-flash", generationConfig: { responseMimeType: "application/json" } });
+
+    // --- Phase 1 & 2: Design and Planning ---
+    sendStatusUpdate(res, 1, 'Analyzing context...');
+    res.flushHeaders(); 
+    const { fullReasoningChain, actionPlan } = await generateDesignAndPlan(messageText, chatHistory, currentState, textModel);
+    console.log(`\n--- 💭 AI Thought Process (Steps 1-5) ---\n${fullReasoningChain}\n------------------------------------------`);
+    
+    // --- STEP 6: Generate JSON with descriptions ---
+    sendStatusUpdate(res, 6, 'Generating JSON structure...');
+    const jsonWithDescriptions = await generateJsonWithDescriptions(actionPlan, messageText, jsonModel, controllerLogic);
+    console.log(`\n--- 🤖 AI Thought: Step 6 - Initial JSON with Descriptions ---\n${jsonWithDescriptions}\n---------------------------------------------------------`);
+
+    // --- STEP 7: Generate JS bodies and assemble the final JSON ---
+    sendStatusUpdate(res, 7, 'Generating JavaScript logic...');
+    const finalJsonObject = await generateFunctionBodies(jsonWithDescriptions, textModel, controllerLogic);
+    
+    // --- Logging and sending the final, assembled payload ---
+    console.log('\n--- ✅ FINAL ASSEMBLED AI JSON OUTPUT ---');
+    const finalJsonString = JSON.stringify(finalJsonObject, null, 2);
+    console.log(`[USER: ${userId}] RESPONSE: ${finalJsonString}...`);
+    
+    const finalPayload = {
+        command: 'finalResponse',
+        payload: { aiResponse: finalJsonString, plan: actionPlan }
+    };
+    res.write(`\n${JSON.stringify(finalPayload)}`);
+    res.end();
+}
+
+// --- Main API Endpoint ---
 app.post('/api/chat', async (req, res) => {
     try {
-        const { messageText, chatHistory, currentState } = req.body;
-        if (!messageText || !currentState) {
-            return res.status(400).json({ error: 'Missing messageText or currentState' });
+        const { userId, messageText, chatHistory, currentState, controllerLogic } = req.body;
+        if (!messageText || !currentState || !controllerLogic) {
+            return res.status(400).json({ error: 'Missing required fields' });
         }
-
-        const textModel = genAI.chats.create({ model: "gemini-2.5-flash" });
-        const jsonModel = genAI.chats.create({ model: "gemini-2.5-flash", generationConfig: { responseMimeType: "application/json" } });
-
-        // --- Execute the REFACTORED Reasoning Chain ---
-
-        // Phase 1: Design
-        sendStatusUpdate(res, 1, 'Deconstructing request...');
-        const problemStatement = await deconstructRequest(messageText, chatHistory, textModel);
-        console.log(`\n--- 💭 AI Thought: Step 1 - Deconstructed Request ---\n${problemStatement}\n------------------------------------------------------`);
-        
-        sendStatusUpdate(res, 2, 'Analyzing current state...');
-        const stateAnalysis = await analyzeCurrentState(problemStatement, currentState, textModel);
-        console.log(`\n--- 💭 AI Thought: Step 2 - State Analysis ---\n${stateAnalysis}\n-------------------------------------------------`);
-        
-        sendStatusUpdate(res, 3, 'Exploring solutions...');
-        const solutions = await exploreSolutions(problemStatement, stateAnalysis, textModel);
-        console.log(`\n--- 💭 AI Thought: Step 3 - Explored Solutions ---\n${solutions}\n----------------------------------------------------`);
-        
-        sendStatusUpdate(res, 4, 'Formulating design proposition...');
-        const designProposition = await formulateProposition(solutions, stateAnalysis, textModel);
-        console.log(`\n--- 💭 AI Thought: Step 4 - Design Proposition ---\n${designProposition}\n----------------------------------------------------`);
-
-        // Phase 2: Implementation (REFACTORED)
-        sendStatusUpdate(res, 5, 'Creating implementation plan...');
-        const actionPlan = await createImplementationPlan(designProposition, stateAnalysis, messageText, textModel);
-        console.log(`\n--- 💭 AI Thought: Step 5 - Final Action Plan ---\n${actionPlan}\n----------------------------------------------------`);
-        
-        // STEP 6: Generate JSON with descriptions
-        sendStatusUpdate(res, 6, 'Generating JSON structure...');
-        const jsonWithDescriptions = await generateJsonWithDescriptions(actionPlan, messageText, jsonModel);
-        console.log(`\n--- 🤖 AI Thought: Step 6 - Initial JSON with Descriptions ---\n${jsonWithDescriptions}\n---------------------------------------------------------`);
-
-        // STEP 7: Generate JS bodies and assemble the final JSON
-        sendStatusUpdate(res, 7, 'Generating JavaScript logic...');
-        const finalJsonObject = await generateFunctionBodies(jsonWithDescriptions, textModel);
-        
-        // --- Logging and sending the final, assembled payload ---
-        console.log('\n--- ✅ FINAL ASSEMBLED AI JSON OUTPUT ---');
-        // Programmatically stringify the final object to ensure correct escaping
-        const finalJsonString = JSON.stringify(finalJsonObject, null, 2);
-        console.log(finalJsonString);
-        console.log('-------------------------------------\n');
-        
-        const finalPayload = {
-            command: 'finalResponse',
-            payload: { aiResponse: finalJsonString, plan: actionPlan }
-        };
-        res.write(`\n${JSON.stringify(finalPayload)}`);
-        res.end();
-
+        // The main chat endpoint now just calls the reusable handler
+        await handleAiRequest(res, userId, messageText, chatHistory, currentState, controllerLogic);
     } catch (error) {
         console.error("Error in /api/chat endpoint:", error);
         res.status(500).json({ error: 'An error occurred while communicating with the AI service.' });
     }
 });
 
+app.post('/api/error-report', async (req, res) => {
+    try {
+        const { userId, errorMessage } = req.body;
+        if (!errorMessage) {
+            return res.status(400).json({ error: 'No error message provided.' });
+        }
+
+        // Log the error to the server's console
+        console.error(`---  RECEIVED FRONTEND ERROR from user ${userId}---`);
+        console.error(errorMessage);
+        console.error('---------------------------------');
+
+        // Send a 204 No Content response to acknowledge receipt
+        res.status(204).send();
+
+    } catch (error) {
+        console.error("Error in /api/error-report endpoint:", error);
+        res.status(500).json({ error: 'Failed to log the error.' });
+    }
+});
+
 app.listen(PORT, () => {
     console.log(`AI Backend server is running on http://localhost:${PORT}`);
-});
+}); 

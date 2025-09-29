@@ -52,21 +52,29 @@ export default class AppController {
             let handler;
 
             try {
+                const sanitizedBody = body.trim();
+
                 if (isAsync) {
-                    handler = new AsyncFunction(...args, body);
+                    handler = new AsyncFunction(...args, sanitizedBody);
                 } else {
-                    handler = new Function(...args, body);
+                    handler = new Function(...args, sanitizedBody);
                 }
                 
-                // ✅ Bind the handler to the persistent context object
                 const boundHandler = handler.bind(this.handlerContext); 
                 eventBus.on(eventName, boundHandler);
                 this.activeHandlers.set(eventName, boundHandler);
 
             } catch (error) {
-                console.error(`Failed to create function for event '${eventName}':`, error);
+                // MODIFIED: Enhanced error logging
+                console.error(`❌ Failed to create function for event '${eventName}':`, {
+                    message: error.message,
+                    eventName: eventName,
+                    functionBody: body, // Log the original, untrimmed body for inspection
+                    errorDetails: error
+                });
             }
         }
+
         console.log("AppController: Activated listeners from config.");
     }
 

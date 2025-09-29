@@ -1,7 +1,5 @@
-
-
-// apiService.js
 import { eventBus } from './eventBus.js';
+import { getUserId } from './sessionManager.js'; // ✅ Import the getter
 
 class ApiService {
   constructor() {
@@ -9,6 +7,7 @@ class ApiService {
       currentState: ''
     };
     this.chatHistory = [];
+    this.controllerLogic = {}; 
     this.initListeners();
   }
 
@@ -47,9 +46,11 @@ class ApiService {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
+            userId: getUserId(),
             messageText,
             currentState: this.prompts.currentState,
-            chatHistory: this.chatHistory
+            chatHistory: this.chatHistory,
+            controllerLogic: this.controllerLogic
           }),
         });
 
@@ -92,7 +93,34 @@ class ApiService {
     eventBus.on('api:update-system-prompts', (payload) => {
       this.updateSystemPrompts(payload);
     });
-  }
-}
+
+    eventBus.on('datastore:logic-updated', (payload) => {
+      if (payload && payload.logic) {
+        this.controllerLogic = payload.logic;
+        console.log('ApiService updated with latest controller logic.');
+      }
+    });
+
+    eventBus.on('error:frontend-uncaught', async (payload) => {
+        const { error } = payload;
+        console.warn("ApiService caught error, sending to new server endpoint...", error);
+    
+        // This is a fire-and-forget request. The server will stream
+        // its response back through the normal SSE connection.
+        await fetch('http://localhost:3000/api/error-report', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            errorMessage: error,
+            userId: getUserId(),
+            currentState: this.prompts.currentState,
+            chatHistory: this.chatHistory,
+            controllerLogic: this.controllerLogic
+          }),
+        });        
+  })}
+};
+
+
 
 export const apiService = new ApiService();
